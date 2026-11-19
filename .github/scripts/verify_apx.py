@@ -37,12 +37,22 @@ PREDEFINED_TYPES = {
 # from Src/ResourceIds.hpp: 32000 'STR#' (name + description), 32500 'STR#'
 # (menu label) and 'MDID', 32530 'STR#' (bilingual UI strings), 32400 'GDLG'
 # and 'DLGH' (the palette), 10001 'GICN' (the icon).
+# What the GRC sources of this add-on must produce inside the .apx.
+# ResConv renames the classic Mac resource types when it writes a Windows
+# resource script, so 'STR#' becomes 'STRS' and 'GDLG' becomes 'GSDG'; the
+# 'GICN' icon becomes a real Windows icon group whose names contain the source
+# file name (see Src/ResourceIds.hpp and RFIX/AddOnFix.grc).
 EXPECTED_RESOURCES = {
-    'STR#': [32000, 32500, 32530],
-    'GDLG': [32400],
-    'DLGH': [32400],
-    'MDID': [32500],
-    'GICN': [10001],
+    'STRS': [32000, 32500, 32530],   # name+description, menu label, palette strings
+    'GSDG': [32400],                  # the palette dialog
+    'DLGH': [32400],                  # its item handles
+    'MDID': [32500],                  # developer id + local id
+}
+
+# Types whose ids are strings in the PE resource directory: one id containing
+# any of these substrings is enough.
+EXPECTED_SUBSTR = {
+    'GROUP_ICON': ['I10001'],         # RFIX/Images/AddOnIcon_18x18.svg compiled by ResConv
 }
 
 
@@ -347,28 +357,39 @@ def main ():
                 for label in sorted (resources, key = str):
                     label_entries = resources[label]
                     ids = sorted ({entry[0] for entry in label_entries}, key = str)
-                    total = sum (entry[1] for entry in label_entries)
-                    say (f'    * {label}: {len (label_entries)} data entry/entries, '
-                         f'ids {ids[:16]}, {total} bytes')
+                    say (f'    * {label}: {len (label_entries)} data entry/entries, ids {ids[:16]}')
                 summary_parts = []
                 for label, entries in sorted (resources.items (), key = lambda item: str (item[0])):
-                    ids = sorted ({entry[0] for entry in entries})[:10]
+                    ids = sorted ({entry[0] for entry in entries}, key = str)[:12]
                     summary_parts.append (f'{label} ({len (entries)} entries, ids {ids})')
-                summary = ', '.join (summary_parts)
-                say (f'* resource summary: {summary}')
+                say ('* resource summary: ' + ', '.join (summary_parts))
                 for label, expected_ids in EXPECTED_RESOURCES.items ():
                     present = {entry[0] for entry in resources.get (label, [])}
                     missing = [res_id for res_id in expected_ids if res_id not in present]
-                    if missing:
+                    if missing and not walk_problems:
+                        fail (f'resource check: {label} missing id(s) {missing} - the GRC resource '
+                              f'was not compiled into this add-on')
+                    elif missing:
                         say (f'* resource check: {label} missing id(s) {missing} (informational)')
                     else:
                         say (f'* resource check: {label} id(s) {expected_ids} present')
+                for label, needles in EXPECTED_SUBSTR.items ():
+                    present_ids = [str (entry[0]) for entry in resources.get (label, [])]
+                    hit = [needle for needle in needles
+                           if any (needle in res_id for res_id in present_ids)]
+                    if hit:
+                        say (f'* resource check: {label} present for {", ".join (hit)}')
+                    elif not walk_problems:
+                        fail (f'resource check: {label} has no id containing {needles} - the icon '
+                              f'resource was not compiled into this add-on')
+                    else:
+                        say (f'* resource check: {label} has no id containing {needles} (informational)')
             else:
                 say ('* resource tree walk interrupted, falling back to a byte scan')
                 # Fallback: the resource type names are stored as UTF-16LE strings
                 # in the PE resource directory, so their presence shows that the
                 # resources compiled by ResConv were linked into the add-on.
-                type_names = sorted (set (list (EXPECTED_RESOURCES) + ['GICN']))
+                type_names = sorted (set (list (EXPECTED_RESOURCES) + list (EXPECTED_SUBSTR)))
                 present = [name for name in type_names if name.encode ('utf-16-le') in data]
                 missing = [name for name in type_names if name not in present]
                 say (f'* resource types found (UTF-16LE scan): {", ".join (present) or "none"}')
