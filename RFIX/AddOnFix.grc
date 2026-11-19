@@ -1,0 +1,13 @@
+/* Add-on identifiers issued by Graphisoft (Archicad API developer portal).
+   The 'MDID' resource must keep the resource id 32500.
+   These two numbers must match the registration on
+   https://archicadapi.graphisoft.com/profile/add-ons */
+
+'MDID' 32500 "Add-On Identifier" {
+	944130148 /* developer id */
+	2158966927 /* local id */
+}
+
+'GICN' 10001 "AddOnIcon" {
+	"AddOnIcon"
+}

@@ -1,0 +1,28 @@
+﻿#include "ResourceIds.hpp"
+
+/* Resources that do not depend on the language the add-on was built with:
+   this folder is compiled for every language, so both languages are always
+   present inside the same .apx. The palette picks its strings at run time. */
+
+'STR#' ID_TEST_STRINGS "TEST palette UI strings - [1-4] English, [5-8] French" {
+/* [  1] */		"TEST"
+/* [  2] */		"Empty palette - starting point of your add-on."
+/* [  3] */		"Français"
+/* [  4] */		"TEST Palette"
+/* [  5] */		"TEST"
+/* [  6] */		"Palette vide - point de départ de votre add-on."
+/* [  7] */		"English"
+/* [  8] */		"Palette TEST"
+}
+
+'GDLG' ID_TEST_PALETTE  Palette | grow | close    40   40  320  100  "TEST" {
+/* [  1] */ LeftText        15   15  290   23    LargePlain vCenter "Empty palette - starting point of your add-on."
+/* [  2] */ Separator       10   50  300    2
+/* [  3] */ Button         195   68  110   23    LargePlain  "Français"
+}
+
+'DLGH' ID_TEST_PALETTE  DLG_Test_Palette {
+1	""			LeftText_0
+2	""			Separator_0
+3	""			Button_0
+}

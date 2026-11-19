@@ -1,0 +1,14 @@
+{
+    "addOnName": "TEST",
+    "defaultLanguage": "INT",
+    "languages": [
+        "INT",
+        "FRA"
+    ],
+    "version": "1.0.0",
+    "copyright": {
+        "name": "nuancearchitect",
+        "year": "%Y"
+    },
+    "description": "Palette vide pour commencer - empty starting palette (FR/EN)"
+}

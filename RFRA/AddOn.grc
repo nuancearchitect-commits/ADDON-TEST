@@ -1,0 +1,16 @@
+﻿#include "ResourceIds.hpp"
+
+/* French ("FRA") resources of the TEST add-on.
+   They are used when the add-on is built for that language, i.e. with
+   -DAC_ADDON_LANGUAGE=FRA or with `python Tools/BuildAddOn.py ... -l`
+   (one .apx per language). The palette itself is bilingual in every build:
+   its texts live in RFIX/TestPalette.grc and are selected at run time. */
+
+'STR#' ID_TEST_INFO "Add-on Name and Description" {
+/* [  1] */		"TEST"
+/* [  2] */		"Palette vide pour commencer. Interface disponible en français et en anglais."
+}
+
+'STR#' ID_TEST_MENU "Strings for the Menu" {
+/* [  1] */		"Palette TEST ^10001"
+}

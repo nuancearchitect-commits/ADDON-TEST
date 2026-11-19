@@ -1,0 +1,26 @@
+# Build outputs
+Build/
+out/
+dist/
+*.apx
+*.bundle/
+
+# CMake / IDE
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+.vs/
+.vscode/
+*.user
+
+# Locally installed API DevKit (downloaded by Tools/BuildAddOn.py into Build/DevKit)
+APIDevKit-*/
+API.Development.Kit.*/
+
+# Python caches created by Tools/CompileResources.py
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db

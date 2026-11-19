@@ -1,0 +1,14 @@
+﻿#include "ResourceIds.hpp"
+
+/* English ("INT") resources of the TEST add-on.
+   This folder is compiled when the add-on is built with -DAC_ADDON_LANGUAGE=INT,
+   which is the case for the default (bilingual) .apx delivered by CI. */
+
+'STR#' ID_TEST_INFO "Add-on Name and Description" {
+/* [  1] */		"TEST"
+/* [  2] */		"Empty palette to start from. Interface available in English and French."
+}
+
+'STR#' ID_TEST_MENU "Strings for the Menu" {
+/* [  1] */		"TEST Palette ^10001"
+}

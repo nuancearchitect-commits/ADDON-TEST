@@ -1,0 +1,362 @@
+name: Build .apx (Archicad 29 / 30, Windows)
+
+# Builds the Archicad add-on with the official Graphisoft tools
+# (submodule Tools = GRAPHISOFT/archicad-addon-cmake-tools) on a Windows
+# GitHub-hosted runner with MSVC, and uploads one bilingual .apx per Archicad
+# version: TEST-AC29.apx, TEST-AC30.apx.
+#
+# Delivery convention: commits whose message starts with "[wip]" are built
+# WITHOUT --forDistribution (the .apx is then flagged as a private build by the
+# official VersionInfo template). CI never creates or replaces a GitHub
+# release; it only uploads artifacts.
+
+on:
+  push:
+    branches:
+      - 'arena/**'
+      - 'main'
+  workflow_dispatch:
+    inputs:
+      build_config:
+        description: 'Build configuration passed to Tools/BuildAddOn.py -b'
+        type: choice
+        required: false
+        default: 'Release'
+        options:
+          - 'Release'
+          - 'RelWithDebInfo'
+          - 'Debug'
+      for_distribution:
+        description: 'Mark the add-on for distribution (Tools/BuildAddOn.py -r -> AC_ADDON_FOR_DISTRIBUTION)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  ADDON_NAME: TEST
+  DEVKIT_REPO: GRAPHISOFT/archicad-api-devkit
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: 'Archicad ${{ matrix.acVersion }} (DevKit ${{ matrix.devkitTag }})'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One row per Archicad version. devkitTag is cross-checked below
+        # against Tools/APIDevKitLinks.json and against the official release.
+        include:
+          - acVersion: 29
+            devkitTag: 29.3100
+          - acVersion: 30
+            devkitTag: 30.3000
+
+    steps:
+
+      - name: 'Checkout (with the official Tools submodule)'
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: 'Setup Python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 'Setup MSVC x64 environment'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 'Toolchain and target information'
+        run: |
+          python --version
+          cmake --version
+          cl 2>&1 | head -2 || true
+          echo "Tools submodule: $(git -C Tools rev-parse HEAD)"
+          echo "  $(git -C Tools log -1 --format=%s)"
+          {
+            echo "### Build context"
+            echo ""
+            echo "* Archicad target: **${{ matrix.acVersion }}** (expected DevKit \`${{ matrix.devkitTag }}\`)"
+            echo "* Commit: \`${GITHUB_SHA}\` on \`${GITHUB_REF_NAME}\` (event: ${GITHUB_EVENT_NAME})"
+            echo "* Runner: ${RUNNER_OS} / ${RUNNER_ARCH}"
+            echo "* Tools submodule: \`$(git -C Tools rev-parse HEAD)\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Delivery mode ([wip] convention)'
+        id: delivery
+        env:
+          DISPATCH_FOR_DISTRIBUTION: ${{ inputs.for_distribution }}
+        run: |
+          message=$(git log -1 --pretty=%B)
+          echo "$message" | head -1
+          case "$message" in
+            \[wip\]*) for_distribution=false; mode="wip (private build, not for distribution)" ;;
+            *) if [ "${DISPATCH_FOR_DISTRIBUTION:-true}" = "false" ]; then
+                 for_distribution=false; mode="workflow_dispatch with for_distribution=false"
+               else
+                 for_distribution=true; mode="release-ready (--forDistribution)"
+               fi ;;
+          esac
+          echo "for_distribution=$for_distribution" >> "$GITHUB_OUTPUT"
+          echo "Delivery mode: $mode"
+          echo "* Delivery mode: $mode" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Resolve the official API DevKit of this Archicad version'
+        id: devkit
+        env:
+          AC_VERSION: ${{ matrix.acVersion }}
+          EXPECTED_TAG: ${{ matrix.devkitTag }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, sys
+
+          version = os.environ['AC_VERSION']
+          expected = os.environ['EXPECTED_TAG']
+          links = json.loads(pathlib.Path('Tools/APIDevKitLinks.json').read_text(encoding='utf-8'))['WIN']
+
+          url = links.get(version)
+          if not url:
+              print(f'::error::Tools/APIDevKitLinks.json has no DevKit link for Archicad {version}')
+              sys.exit(1)
+
+          tag = url.split('/')[-2]
+          asset = url.split('/')[-1]
+          lp_url = links.get('LP' + version, '')
+
+          if tag != expected:
+              print(f"::error::DevKit tag mismatch for Archicad {version}: the workflow matrix expects")
+              print(f"::error::{expected} while Tools/APIDevKitLinks.json provides {tag}.")
+              print('::error::Update the matrix (or the Tools submodule) - do not mix two DevKit versions.')
+              sys.exit(1)
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write(f'tag={tag}\n')
+              f.write(f'url={url}\n')
+              f.write(f'asset={asset}\n')
+              f.write(f'lpurl={lp_url}\n')
+
+          print(f'Archicad {version} -> official DevKit {tag}: {url}')
+          if lp_url:
+              print(f'Archicad {version} -> LP_XMLConverter: {lp_url}')
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write(f'### Official DevKit used for Archicad {version}\n\n')
+              f.write(f'* tag: `{tag}` (matches `Tools/APIDevKitLinks.json`)\n')
+              f.write(f'* asset: `{asset}`\n')
+              f.write(f'* url: <{url}>\n')
+              f.write(f'* LP_XMLConverter: `{lp_url.rsplit("/", 1)[-1] if lp_url else "none"}`\n\n')
+          PY
+
+      - name: 'Check the DevKit asset in the official Graphisoft release'
+        env:
+          DEVKIT_TAG: ${{ steps.devkit.outputs.tag }}
+          DEVKIT_ASSET: ${{ steps.devkit.outputs.asset }}
+        run: |
+          api="https://api.github.com/repos/${DEVKIT_REPO}/releases/tags/${DEVKIT_TAG}"
+          code=$(curl -sS -o release.json -w '%{http_code}' --max-time 60 -H "Accept: application/vnd.github+json" "$api" || echo 000)
+          echo "GitHub API HTTP $code for $api"
+          if [ "$code" = "200" ]; then
+            python - <<'PY'
+          import json, os, pathlib, sys
+
+          release = json.loads(pathlib.Path('release.json').read_text(encoding='utf-8'))
+          asset = os.environ['DEVKIT_ASSET']
+          assets = {a['name']: a['size'] for a in release.get('assets', [])}
+          if asset not in assets:
+              print(f'::error::asset {asset} is not published in release {release["tag_name"]}')
+              print(f'::error::available assets: {sorted(assets)}')
+              sys.exit(1)
+          print(f'Asset {asset} present in release {release["tag_name"]} ({assets[asset]} bytes)')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write(f'* release `{release["tag_name"]}`: prerelease={release["prerelease"]}, '
+                      f'published={release.get("published_at")}, asset `{asset}` = {assets[asset]} bytes\n')
+          PY
+          else
+            echo "Release listing unavailable (HTTP $code, probably an API rate limit). Continuing: BuildAddOn.py downloads the official release URL."
+            echo "* release asset listing: skipped (HTTP $code)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 'Cache the API DevKit (per Archicad version)'
+        id: devkit-cache
+        uses: actions/cache@v4
+        with:
+          path: Build/DevKit/APIDevKit-${{ matrix.acVersion }}
+          key: apidevkit-win-ac${{ matrix.acVersion }}-${{ steps.devkit.outputs.tag }}-${{ hashFiles('Tools/APIDevKitLinks.json') }}
+          restore-keys: |
+            apidevkit-win-ac${{ matrix.acVersion }}-${{ steps.devkit.outputs.tag }}-
+            apidevkit-win-ac${{ matrix.acVersion }}-
+
+      - name: 'DevKit cache status'
+        run: |
+          if [ "${{ steps.devkit-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "DevKit restored from the GitHub Actions cache - no download needed."
+          else
+            echo "Cache miss (not an error): Tools/BuildAddOn.py downloads the official DevKit zip from the Graphisoft release and extracts it into Build/DevKit."
+          fi
+
+      - name: 'Build the add-on with the official Tools/BuildAddOn.py'
+        env:
+          AC_VERSION: ${{ matrix.acVersion }}
+          BUILD_CONFIG: ${{ inputs.build_config || 'Release' }}
+          FOR_DISTRIBUTION: ${{ steps.delivery.outputs.for_distribution }}
+        run: |
+          set -o pipefail
+          ARGS=(--configFile config.json -v "$AC_VERSION" -b "$BUILD_CONFIG")
+          if [ "$FOR_DISTRIBUTION" = "true" ]; then
+            ARGS+=(--forDistribution)
+          fi
+          echo "python Tools/BuildAddOn.py ${ARGS[*]}"
+          python Tools/BuildAddOn.py "${ARGS[@]}" 2>&1 | tee "build-ac${AC_VERSION}.log"
+
+      - name: 'Verify the add-on against the real DevKit headers'
+        if: always()
+        env:
+          AC_VERSION: ${{ matrix.acVersion }}
+        run: |
+          DIR="Build/DevKit/APIDevKit-${AC_VERSION}/Support"
+          {
+            echo "### API verification against the DevKit headers actually used (Archicad ${AC_VERSION})"
+            echo ""
+            if [ ! -d "$DIR" ]; then
+              echo "* \`$DIR\` is not present (the DevKit is downloaded by the build step)."
+            else
+              echo '```'
+              echo "-- DG::Palette (Modules/DGLib/DGDialog.hpp)"
+              grep -n "class DG_DLL_EXPORT Palette" "$DIR/Modules/DGLib/DGDialog.hpp" || echo "!! DG::Palette not found"
+              sed -n '/class DG_DLL_EXPORT Palette/,/};/p' "$DIR/Modules/DGLib/DGDialog.hpp" | head -25
+              echo "-- DG text helpers (Modules/DGLib/DG.h)"
+              grep -n "DGSetItemText\|DGSetDialogTitle\|DGModelessInit" "$DIR/Modules/DGLib/DG.h" || echo "!! not found"
+              echo "-- modeless window registration (Inc)"
+              grep -rn "ACAPI_RegisterModelessWindow\|ACAPI_UnregisterModelessWindow" "$DIR/Inc" | head -6
+              echo "-- API_PalEnabled_* values"
+              grep -rn "API_PalEnabled_" "$DIR/Inc" | head -14
+              echo "-- RSGetIndString"
+              grep -rn "RSGetIndString" "$DIR/Inc" | head -6
+              echo "-- GSGuid2APIGuid"
+              grep -rn "GSGuid2APIGuid" "$DIR/Inc" | head -4
+              echo "-- language codes (VERSION_APPENDIX in Inc/GSLocalization.h)"
+              grep -c "VERSION_APPENDIX" "$DIR/Inc/GSLocalization.h" || true
+              grep -A2 'FRA__APP\|INT__APP' "$DIR/Inc/GSLocalization.h" | head -20
+              echo '```'
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "DevKit header verification appended to the job summary."
+
+      - name: 'Locate, check and verify the produced .apx'
+        env:
+          AC_VERSION: ${{ matrix.acVersion }}
+        run: |
+          found=$(find Build -type f -name "${ADDON_NAME}.apx" | head -1)
+          if [ -z "$found" ]; then
+            echo "::error::No ${ADDON_NAME}.apx produced under Build/ for Archicad ${AC_VERSION}"
+            find Build -maxdepth 5 -type d | sed -n '1,60p'
+            exit 1
+          fi
+          echo "Produced: $found"
+          size=$(stat -c %s "$found" 2>/dev/null || wc -c < "$found")
+          echo "Size: $size bytes"
+          if [ "$size" -lt 4096 ]; then
+            echo "::error::${ADDON_NAME}.apx is only $size bytes - refusing to deliver an empty add-on"
+            exit 1
+          fi
+          mkdir -p dist
+          target="dist/${ADDON_NAME}-AC${AC_VERSION}.apx"
+          cp -f "$found" "$target"
+          python .github/scripts/verify_apx.py "$target" \
+            --expect "Empty palette - starting point of your add-on." \
+            --expect "Palette vide - point de départ de votre add-on." \
+            --mdid-from-grc RFIX/AddOnFix.grc \
+            --report summary_apx.md
+          {
+            echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
+            echo ""
+            cat summary_apx.md
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "APX_PATH=$target" >> "$GITHUB_ENV"
+
+      - name: 'Upload the .apx artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: TEST-AC${{ matrix.acVersion }}-apx
+          path: ${{ env.APX_PATH }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: 'Upload the build log'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-ac${{ matrix.acVersion }}
+          path: build-ac${{ matrix.acVersion }}.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 'Failure diagnostics (first real error)'
+        if: failure()
+        env:
+          AC_VERSION: ${{ matrix.acVersion }}
+        run: |
+          LOG="build-ac${AC_VERSION}.log"
+          {
+            echo "### First real error - Archicad ${AC_VERSION} @ ${GITHUB_SHA:0:10}"
+            echo ""
+            if [ -f "$LOG" ]; then
+              line=$(grep -n -m1 -E "error C[0-9]+|fatal error|error RC[0-9]+|LNK[0-9]+:|CMake Error|AssertionError|Failed to compile resource|Failed to build project|Traceback \(most recent call last\)|FAILED" "$LOG" | cut -d: -f1 || true)
+              if [ -n "$line" ]; then
+                echo '```'
+                sed -n "$(( line > 8 ? line - 8 : 1 )),$(( line + 14 ))p" "$LOG"
+                echo '```'
+                src=$(grep -m1 -oE "[A-Za-z0-9_.\\\\/-]+\.(grc|cpp|hpp|h|c|i)(\([0-9]+\))?" "$LOG" || true)
+                echo "File reported next to the first error: ${src:-unknown}"
+                base=$(printf '%s' "$src" | sed -E 's/\(.*//' | tr '\\' '/' | sed 's#.*/##')
+                if [ -n "$base" ] && [ "$base" != "unknown" ]; then
+                  for f in $(find . -name "$base" -not -path "./Build/DevKit/*" 2>/dev/null | head -3); do
+                    echo ""
+                    echo "#### Source $f"
+                    echo '```'
+                    cat "$f"
+                    echo '```'
+                  done
+                  for pre in $(find Build -name "${base}.i" 2>/dev/null | head -2); do
+                    ln=$(printf '%s' "$src" | grep -oE '\(([0-9]+)\)' | tr -d '()' | head -1)
+                    echo ""
+                    echo "#### Preprocessed resource $pre (around line ${ln:-1})"
+                    echo '```'
+                    if [ -n "$ln" ]; then
+                      sed -n "$(( ln > 6 ? ln - 6 : 1 )),$(( ln + 6 ))p" "$pre"
+                    else
+                      sed -n '1,40p' "$pre"
+                    fi
+                    echo '```'
+                  done
+                fi
+              else
+                echo '```'
+                tail -80 "$LOG"
+                echo '```'
+              fi
+            else
+              echo "* No build log ($LOG): the failure happened before or after the build step."
+            fi
+            echo ""
+            echo "#### Build tree"
+            echo '```'
+            find Build -maxdepth 5 -type d 2>/dev/null | sed -n '1,40p'
+            ls -la "Build/TEST/${AC_VERSION}" 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Diagnostics written to the job summary (full log: artifact build-log-ac${AC_VERSION})."
