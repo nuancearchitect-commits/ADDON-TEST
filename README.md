@@ -132,7 +132,7 @@ build**, dans le résumé du job.
 
 | Version | DevKit | Générateur CMake | C++ | Particularités prises en compte |
 |---|---|---|---|---|
-| Archicad 29 | `29.3100` | Visual Studio 17 2022, toolset `v143` (choisi par `BuildAddOn.py`) | `cxx_std_17` | chemins `Lib/ACAP_STAT.lib` (≥ 27) ; `API_PalEnabled_ModelCompare` disponible |
+| Archicad 29 | `29.3100` | Visual Studio 17 2022, toolset `v143` (choisi par `BuildAddOn.py`) | `cxx_std_20` (`CMakeCommon.cmake`: `cxx_std_20` à partir d'Archicad 29) | chemins `Lib/ACAP_STAT.lib` (≥ 27) ; `API_PalEnabled_ModelCompare` disponible |
 | Archicad 30 | `30.3000` | Visual Studio 17 2022, toolset `v143` | `cxx_std_20` | `ACAPI_RegisterModelessWindow` accepte un 4ᵉ paramètre par défaut (`APINULLGuid`) ; `ResConv` est appelé avec `-py/-sc` par `CompileResources.py` (icônes sombre/clair) |
 
 Le code n’utilise que l’API présente sur les deux versions : **aucune

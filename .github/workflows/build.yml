@@ -311,8 +311,11 @@ jobs:
           echo "::notice::TEST-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
           # Repeat the binary verification results as an annotation: it stays
           # readable without downloading the artifact.
-          checks=$(sed -e 's/\r//' -e 's/[*`|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-1000)
+          checks=$(sed -e 's/\r//' -e 's/[*`|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-400)
           echo "::notice::TEST-AC${AC_VERSION}.apx checks: ${checks}"
+          res=$(grep -a -E "resource|\.rsrc|STR#|GDLG|MDID" verify-ac${AC_VERSION}.txt \
+                 | sed -e 's/\r//' -e 's/[*`|]/ /g' | tr '\n' '|' | cut -c1-900)
+          echo "::notice::TEST-AC${AC_VERSION}.apx resources: ${res}"
           {
             echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
             echo ""

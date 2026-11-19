@@ -91,7 +91,12 @@ def read_header (data: bytes):
 
 
 class RvaMapper:
-    """Converts a relative virtual address into an offset inside the file on disk."""
+    """Converts a relative virtual address into an offset inside the file on disk.
+
+    Note that the PE *resource directory* offsets are NOT RVAs: they are
+    offsets relative to the start of the resource directory (see
+    walk_resources), only IMAGE_RESOURCE_DATA_ENTRY.OffsetToData is an RVA.
+    """
 
     def __init__ (self, data: bytes, sections):
         self.data = data
@@ -113,7 +118,7 @@ class RvaMapper:
         return '; '.join (parts)
 
 
-def directory_entries (data: bytes, offset: int, mapper: RvaMapper, what: str):
+def directory_entries (data: bytes, offset: int, resolve, what: str):
     if offset < 0 or offset + 16 > len (data):
         raise PEParseError (f'{what}: directory at file offset 0x{offset:x} is outside the file '
                             f'(size 0x{len (data):x})')
@@ -131,7 +136,7 @@ def directory_entries (data: bytes, offset: int, mapper: RvaMapper, what: str):
             raise PEParseError (f'{what}: entry {index} is outside the file')
         name_or_id, sub = struct.unpack_from ('<II', data, entry)
         if name_or_id & 0x80000000:
-            name_offset = mapper.offset_of (name_or_id & 0x7FFFFFFF)
+            name_offset = resolve (name_or_id)
             length = struct.unpack_from ('<H', data, name_offset)[0]
             label = safe_text (data[name_offset + 2:name_offset + 2 + length * 2].decode ('utf-16-le', 'replace'))[:32]
         else:
@@ -161,13 +166,37 @@ def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int, log = Non
         log (f'* resource root: file offset 0x{root_offset:x} (rva 0x{resource_rva:x}), '
              f'{named_count} named type(s) + {id_count} type(s) by id')
 
-    for type_label, type_sub in directory_entries (data, root_offset, mapper, 'resource type directory'):
+    # Inside the resource directory the offsets of the tree (sub-directories and
+    # type/id name strings) are relative to the start of the root directory, not
+    # image RVAs. Only the data entries hold an image RVA.
+    def resolve (value: int) -> int:
+        """Resolve the offset of a sub-directory or of a type/id name string.
+
+        Those offsets are stored relative to the start of the resource directory
+        (that is how rc.exe writes them); a value that cannot be read that way is
+        resolved through the section table instead, so a slightly different
+        convention never breaks the walk."""
+        value &= 0x7FFFFFFF
+        candidate = root_offset + value
+        if 0 <= candidate and candidate + 16 <= len (data):
+            return candidate
+        return mapper.offset_of (value)
+
+    def resolve_data (value: int) -> int:
+        """Resolve IMAGE_RESOURCE_DATA_ENTRY.OffsetToData, which is an image RVA."""
+        value &= 0x7FFFFFFF
+        try:
+            return mapper.offset_of (value)
+        except PEParseError:
+            return root_offset + value
+
+    for type_label, type_sub in directory_entries (data, root_offset, resolve, 'resource type directory'):
         key = type_label if isinstance (type_label, str) else PREDEFINED_TYPES.get (type_label, f'#{type_label}')
         if not type_sub & 0x80000000:
             problems.append (f'{key}: entry does not point to a directory')
             continue
         try:
-            id_entries = directory_entries (data, mapper.offset_of (type_sub & 0x7FFFFFFF), mapper,
+            id_entries = directory_entries (data, resolve (type_sub), resolve,
                                             f'resource type {key} directory')
         except PEParseError as error:
             problems.append (safe_text (f'{key}: {error}'))
@@ -177,7 +206,7 @@ def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int, log = Non
                 problems.append (f'{key}/{res_id}: entry does not point to a directory')
                 continue
             try:
-                lang_entries = directory_entries (data, mapper.offset_of (res_sub & 0x7FFFFFFF), mapper,
+                lang_entries = directory_entries (data, resolve (res_sub), resolve,
                                                    f'{key} id {res_id} directory')
             except PEParseError as error:
                 problems.append (safe_text (f'{key}/{res_id}: {error}'))
@@ -187,7 +216,7 @@ def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int, log = Non
                     problems.append (f'{key}/{res_id}: unexpected nested directory')
                     continue
                 try:
-                    res_rva, res_size = struct.unpack_from ('<II', data, mapper.offset_of (lang_entry & 0x7FFFFFFF))
+                    res_rva, res_size = struct.unpack_from ('<II', data, resolve_data (lang_entry))
                 except (PEParseError, struct.error) as error:
                     problems.append (safe_text (f'{key}/{res_id}: {error}'))
                     continue
