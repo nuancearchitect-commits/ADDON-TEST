@@ -287,12 +287,22 @@ jobs:
             --expect "Palette vide - point de départ de votre add-on." \
             --expect "Empty palette to start from. Interface available in English and French." \
             --mdid-from-grc RFIX/AddOnFix.grc \
-            --report summary_apx.md 2>&1 | tee verify-ac${AC_VERSION}.txt || rc=$?
+            --report summary_apx.md > verify-ac${AC_VERSION}.txt 2>&1 || rc=$?
+          cat verify-ac${AC_VERSION}.txt
+          {
+            echo "### Binary verification of \`TEST-AC${AC_VERSION}.apx\` (exit code $rc)"
+            echo ""
+            echo '```'
+            sed -e 's/\r//' verify-ac${AC_VERSION}.txt
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" != "0" ]; then
-            # Surface the whole verification output as annotations: the artifact
-            # log may not be downloadable, the annotations always are.
-            sed -e 's/\r//' -e "s/^/::error::[verify AC${AC_VERSION}] /" verify-ac${AC_VERSION}.txt | head -30
-            echo "::error::[verify AC${AC_VERSION}] exit code $rc - the produced .apx did not pass verification"
+            # GitHub keeps only a few annotations per job: report the real problems first.
+            grep -a -E "FAILED|^FAIL:|::error::|Traceback|not found" verify-ac${AC_VERSION}.txt \
+              | sed -e 's/\r//' -e 's/^::error:://' -e "s/^/[verify AC${AC_VERSION}] /" \
+              | head -4 | while IFS= read -r l; do echo "::error::${l}"; done
+            echo "::error::[verify AC${AC_VERSION}] exit code $rc - the full verification report is in the job summary"
             exit "$rc"
           fi
           sha=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
