@@ -223,36 +223,40 @@ jobs:
 
       - name: 'Verify the add-on against the real DevKit headers'
         if: always()
+        continue-on-error: true
         env:
           AC_VERSION: ${{ matrix.acVersion }}
         run: |
-          DIR="Build/DevKit/APIDevKit-${AC_VERSION}/Support"
           {
+            # Diagnostics only: never fail the job here.
+            set +e
             echo "### API verification against the DevKit headers actually used (Archicad ${AC_VERSION})"
             echo ""
+            DIR="Build/DevKit/APIDevKit-${AC_VERSION}/Support"
             if [ ! -d "$DIR" ]; then
               echo "* \`$DIR\` is not present (the DevKit is downloaded by the build step)."
             else
               echo '```'
               echo "-- DG::Palette (Modules/DGLib/DGDialog.hpp)"
-              grep -n "class DG_DLL_EXPORT Palette" "$DIR/Modules/DGLib/DGDialog.hpp" || echo "!! DG::Palette not found"
-              sed -n '/class DG_DLL_EXPORT Palette/,/};/p' "$DIR/Modules/DGLib/DGDialog.hpp" | head -25
-              echo "-- DG text helpers (Modules/DGLib/DG.h)"
-              grep -n "DGSetItemText\|DGSetDialogTitle\|DGModelessInit" "$DIR/Modules/DGLib/DG.h" || echo "!! not found"
+              sed -n '/class DG_DLL_EXPORT Palette/,/};/p' "$DIR/Modules/DGLib/DGDialog.hpp"
+              echo "-- DG helpers used by the add-on (Modules/DGLib/DG.h)"
+              grep -n "DGSetItemText\|DGSetDialogTitle\|DGModelessInit" "$DIR/Modules/DGLib/DG.h"
               echo "-- modeless window registration (Inc)"
               grep -rn "ACAPI_RegisterModelessWindow\|ACAPI_UnregisterModelessWindow" "$DIR/Inc" | head -6
               echo "-- API_PalEnabled_* values"
               grep -rn "API_PalEnabled_" "$DIR/Inc" | head -14
-              echo "-- RSGetIndString"
+              echo "-- RSGetIndString / GSGuid2APIGuid"
               grep -rn "RSGetIndString" "$DIR/Inc" | head -6
-              echo "-- GSGuid2APIGuid"
               grep -rn "GSGuid2APIGuid" "$DIR/Inc" | head -4
               echo "-- language codes (VERSION_APPENDIX in Inc/GSLocalization.h)"
-              grep -c "VERSION_APPENDIX" "$DIR/Inc/GSLocalization.h" || true
-              grep -A2 'FRA__APP\|INT__APP' "$DIR/Inc/GSLocalization.h" | head -20
+              grep -c "VERSION_APPENDIX" "$DIR/Inc/GSLocalization.h"
+              grep -A2 "FRA__APP\|INT__APP" "$DIR/Inc/GSLocalization.h" | head -20
+              echo "-- ResConv present:"
+              ls -la "$DIR/Tools/Win/ResConv.exe"
               echo '```'
             fi
             echo ""
+            set -e
           } >> "$GITHUB_STEP_SUMMARY"
           echo "DevKit header verification appended to the job summary."
 
@@ -315,6 +319,7 @@ jobs:
         env:
           AC_VERSION: ${{ matrix.acVersion }}
         run: |
+          set +e   # diagnostics only: this step must never add its own errors
           LOG="build-ac${AC_VERSION}.log"
           line=""
           first=""
