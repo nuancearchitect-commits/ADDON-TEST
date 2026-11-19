@@ -53,22 +53,23 @@ jobs:
       matrix:
         # One row per Archicad version. devkitTag is cross-checked below
         # against Tools/APIDevKitLinks.json and against the official release.
+        # Keep the tags quoted: YAML would read 29.3100 as the number 29.31.
         include:
           - acVersion: 29
-            devkitTag: 29.3100
+            devkitTag: '29.3100'
           - acVersion: 30
-            devkitTag: 30.3000
+            devkitTag: '30.3000'
 
     steps:
 
       - name: 'Checkout (with the official Tools submodule)'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           fetch-depth: 1
 
       - name: 'Setup Python'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -280,6 +281,10 @@ jobs:
             --expect "Palette vide - point de départ de votre add-on." \
             --mdid-from-grc RFIX/AddOnFix.grc \
             --report summary_apx.md
+          sha=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
+          if [ -z "$sha" ]; then sha=$(certutil -hashfile "$target" SHA256 2>/dev/null | sed -n 2p | tr -d ' '); fi
+          echo "* SHA-256: \`$sha\`" >> summary_apx.md
+          echo "::notice::TEST-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
           {
             echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
             echo ""
@@ -311,11 +316,30 @@ jobs:
           AC_VERSION: ${{ matrix.acVersion }}
         run: |
           LOG="build-ac${AC_VERSION}.log"
+          line=""
+          first=""
+          if [ -f "$LOG" ]; then
+            line=$(grep -n -m1 -E "error C[0-9]+|fatal error|error RC[0-9]+|LNK[0-9]+:|CMake Error|AssertionError|Failed to compile resource|Failed to build project|Traceback \(most recent call last\)|FAILED" "$LOG" | cut -d: -f1 || true)
+            if [ -n "$line" ]; then
+              first=$(sed -n "${line}p" "$LOG" | tr -d '\r' | cut -c1-200)
+            fi
+          fi
+          # Keep the first real error visible in the annotations (works even when
+          # the full log cannot be downloaded).
+          echo "::error::[Archicad ${AC_VERSION} @ ${GITHUB_SHA:0:8}] ${first:-the job failed before/after the build step - see the job log}"
+          if [ -f "$LOG" ]; then
+            errs=$(grep -oE "(error|fatal error) C[0-9]+: .{0,150}|LNK[0-9]+: .{0,150}|error RC[0-9]+.{0,150}|AssertionError.{0,150}|CMake Error.{0,150}" "$LOG" 2>/dev/null | tr -d '\r' | sort -u | head -5 || true)
+            index=0
+            while IFS= read -r single; do
+              [ -n "$single" ] || continue
+              index=$((index + 1))
+              echo "::error::[Archicad ${AC_VERSION}] distinct error ${index}: ${single}"
+            done <<< "$errs"
+          fi
           {
             echo "### First real error - Archicad ${AC_VERSION} @ ${GITHUB_SHA:0:10}"
             echo ""
             if [ -f "$LOG" ]; then
-              line=$(grep -n -m1 -E "error C[0-9]+|fatal error|error RC[0-9]+|LNK[0-9]+:|CMake Error|AssertionError|Failed to compile resource|Failed to build project|Traceback \(most recent call last\)|FAILED" "$LOG" | cut -d: -f1 || true)
               if [ -n "$line" ]; then
                 echo '```'
                 sed -n "$(( line > 8 ? line - 8 : 1 )),$(( line + 14 ))p" "$LOG"
