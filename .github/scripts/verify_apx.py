@@ -350,6 +350,12 @@ def main ():
                     total = sum (entry[1] for entry in label_entries)
                     say (f'    * {label}: {len (label_entries)} data entry/entries, '
                          f'ids {ids[:16]}, {total} bytes')
+                summary_parts = []
+                for label, entries in sorted (resources.items (), key = lambda item: str (item[0])):
+                    ids = sorted ({entry[0] for entry in entries})[:10]
+                    summary_parts.append (f'{label} ({len (entries)} entries, ids {ids})')
+                summary = ', '.join (summary_parts)
+                say (f'* resource summary: {summary}')
                 for label, expected_ids in EXPECTED_RESOURCES.items ():
                     present = {entry[0] for entry in resources.get (label, [])}
                     missing = [res_id for res_id in expected_ids if res_id not in present]

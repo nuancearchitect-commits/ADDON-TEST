@@ -313,8 +313,8 @@ jobs:
           # readable without downloading the artifact.
           checks=$(sed -e 's/\r//' -e 's/[*`|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-400)
           echo "::notice::TEST-AC${AC_VERSION}.apx checks: ${checks}"
-          res=$(grep -a -E "resource|\.rsrc|STR#|GDLG|MDID" verify-ac${AC_VERSION}.txt \
-                 | sed -e 's/\r//' -e 's/[*`|]/ /g' | tr '\n' '|' | cut -c1-900)
+          res=$(grep -a -E "resource summary|resource check|resource walk|resource root|\.rsrc|data entry|entries, ids" verify-ac${AC_VERSION}.txt \
+                 | sed -e 's/\r//' -e 's/[*`|]/ /g' | tr '\n' '|' | cut -c1-1200)
           echo "::notice::TEST-AC${AC_VERSION}.apx resources: ${res}"
           {
             echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
