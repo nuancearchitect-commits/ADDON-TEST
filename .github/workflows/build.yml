@@ -283,6 +283,7 @@ jobs:
           python .github/scripts/verify_apx.py "$target" \
             --expect "Empty palette - starting point of your add-on." \
             --expect "Palette vide - point de départ de votre add-on." \
+            --expect "Empty palette to start from. Interface available in English and French." \
             --mdid-from-grc RFIX/AddOnFix.grc \
             --report summary_apx.md
           sha=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
@@ -291,7 +292,7 @@ jobs:
           echo "::notice::TEST-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
           # Repeat the binary verification results as an annotation: it stays
           # readable without downloading the artifact.
-          checks=$(sed -e 's/\r//' -e 's/[*`#|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-1000)
+          checks=$(sed -e 's/\r//' -e 's/[*`|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-1000)
           echo "::notice::TEST-AC${AC_VERSION}.apx checks: ${checks}"
           {
             echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"

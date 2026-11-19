@@ -33,11 +33,16 @@ PREDEFINED_TYPES = {
     19: 'PLUGPLAY', 24: 'ANICURSOR', 25: 'ANIICON', 28: 'HTML',
 }
 
+# What the GRC sources of this add-on are expected to produce. The ids come
+# from Src/ResourceIds.hpp: 32000 'STR#' (name + description), 32500 'STR#'
+# (menu label) and 'MDID', 32530 'STR#' (bilingual UI strings), 32400 'GDLG'
+# and 'DLGH' (the palette), 10001 'GICN' (the icon).
 EXPECTED_RESOURCES = {
     'STR#': [32000, 32500, 32530],
     'GDLG': [32400],
     'DLGH': [32400],
     'MDID': [32500],
+    'GICN': [10001],
 }
 
 
@@ -46,6 +51,11 @@ class PEParseError (Exception):
 
 
 def read_header (data: bytes):
+    """Parse what is needed to locate the PE resource tree.
+
+    Returns (machine, magic, characteristics, sections, resource_rva, resource_size)
+    with sections = [(name, virtual_address, virtual_size, raw_ptr, raw_size), ...].
+    """
     if len (data) < 0x40 or data[:2] != b'MZ':
         raise PEParseError ('not an MZ/PE file')
     e_lfanew = struct.unpack_from ('<I', data, 0x3C)[0]
@@ -64,25 +74,57 @@ def read_header (data: bytes):
         name = data[entry:entry + 8].rstrip (b'\0').decode ('latin-1')
         virtual_size, virtual_address, raw_size, raw_ptr = struct.unpack_from ('<IIII', data, entry + 8)
         sections.append ((name, virtual_address, virtual_size, raw_ptr, raw_size))
-    return machine, magic, characteristics, sections
+    resource_rva = resource_size = 0
+    # The resource directory is data directory entry 2, right after the standard
+    # fields of the optional header (112 bytes for PE32+, 96 for PE32).
+    data_directories = e_lfanew + 24 + (112 if magic == 0x20B else 96)
+    if data_directories + 3 * 8 <= len (data):
+        resource_rva, resource_size = struct.unpack_from ('<II', data, data_directories + 2 * 8)
+    return machine, magic, characteristics, sections, resource_rva, resource_size
 
 
-def directory_entries (data: bytes, offset: int, offset_of):
+class RvaMapper:
+    """Converts a relative virtual address into an offset inside the file on disk."""
+
+    def __init__ (self, data: bytes, sections):
+        self.data = data
+        self.sections = sections
+
+    def offset_of (self, rva: int) -> int:
+        for _, virtual_address, virtual_size, raw_ptr, raw_size in self.sections:
+            span = max (raw_size, virtual_size)
+            if raw_ptr and virtual_address <= rva < virtual_address + span:
+                return raw_ptr + (rva - virtual_address)
+        if 0 < rva < len (self.data):
+            return rva          # offsets already relative to the file start
+        raise PEParseError (f'RVA 0x{rva:x} is not covered by any section')
+
+    def describe (self):
+        parts = []
+        for name, virtual_address, _, raw_ptr, raw_size in self.sections:
+            parts.append (f'{name}: rva=0x{virtual_address:x} raw=0x{raw_ptr:x} size=0x{raw_size:x}')
+        return '; '.join (parts)
+
+
+def directory_entries (data: bytes, offset: int, mapper: RvaMapper, what: str):
     if offset < 0 or offset + 16 > len (data):
-        raise PEParseError ('resource directory out of bounds')
+        raise PEParseError (f'{what}: directory at file offset 0x{offset:x} is outside the file '
+                            f'(size 0x{len (data):x})')
     # IMAGE_RESOURCE_DIRECTORY: Characteristics, TimeDateStamp, MajorVersion,
     # MinorVersion, NumberOfNamedEntries, NumberOfIdEntries  (16 bytes)
     directory_header = struct.unpack_from ('<IIHHHH', data, offset)
     named_count, id_count = directory_header[4], directory_header[5]
+    if named_count + id_count > 4096:
+        raise PEParseError (f'{what}: implausible entry count ({named_count} named, {id_count} by id)')
     entries = []
     base = offset + 16
     for index in range (named_count + id_count):
         entry = base + index * 8
         if entry + 8 > len (data):
-            raise PEParseError ('resource entry out of bounds')
+            raise PEParseError (f'{what}: entry {index} is outside the file')
         name_or_id, sub = struct.unpack_from ('<II', data, entry)
         if name_or_id & 0x80000000:
-            name_offset = offset_of (name_or_id & 0x7FFFFFFF)
+            name_offset = mapper.offset_of (name_or_id & 0x7FFFFFFF)
             length = struct.unpack_from ('<H', data, name_offset)[0]
             label = data[name_offset + 2:name_offset + 2 + length * 2].decode ('utf-16-le', 'replace')
         else:
@@ -91,27 +133,28 @@ def directory_entries (data: bytes, offset: int, offset_of):
     return entries
 
 
-def walk_resources (data: bytes, sections):
-    rsrc = next ((s for s in sections if s[0] == '.rsrc'), None)
-    if rsrc is None:
-        return None
-    _, virtual, _, raw, _ = rsrc
-
-    def offset_of (rva):
-        return raw + (rva - virtual)
+def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int):
+    """Return {type name: [(id, size, rva), ...]} of the resources inside the add-on."""
+    if not resource_rva:
+        rsrc = next ((s for s in mapper.sections if s[0] == '.rsrc'), None)
+        if rsrc is None:
+            raise PEParseError ('no resource data directory and no .rsrc section')
+        resource_rva = rsrc[1]
 
     resources = {}
-    for type_label, type_sub in directory_entries (data, offset_of (virtual), offset_of):
+    for type_label, type_sub in directory_entries (data, mapper.offset_of (resource_rva), mapper, 'resource type directory'):
         key = type_label if isinstance (type_label, str) else PREDEFINED_TYPES.get (type_label, f'#{type_label}')
         if not type_sub & 0x80000000:
             continue
-        for res_id, res_sub in directory_entries (data, offset_of (type_sub & 0x7FFFFFFF), offset_of):
+        type_what = f'resource type {key!r} directory'
+        for res_id, res_sub in directory_entries (data, mapper.offset_of (type_sub & 0x7FFFFFFF), mapper, type_what):
             if not res_sub & 0x80000000:
                 continue
-            for _, lang_entry in directory_entries (data, offset_of (res_sub & 0x7FFFFFFF), offset_of):
+            name_what = f'{key!r} id {res_id} directory'
+            for _, lang_entry in directory_entries (data, mapper.offset_of (res_sub & 0x7FFFFFFF), mapper, name_what):
                 if lang_entry & 0x80000000:
                     continue
-                res_rva, res_size = struct.unpack_from ('<II', data, offset_of (lang_entry & 0x7FFFFFFF))
+                res_rva, res_size = struct.unpack_from ('<II', data, mapper.offset_of (lang_entry & 0x7FFFFFFF))
                 resources.setdefault (key, []).append ((res_id, res_size, res_rva))
     return resources
 
@@ -180,7 +223,7 @@ def main ():
             fail (f'{path.name} is smaller than {args.min_size} bytes - empty or truncated add-on')
 
         try:
-            machine, magic, characteristics, sections = read_header (data)
+            machine, magic, characteristics, sections, resource_rva, resource_size = read_header (data)
             names = {0x8664: 'x64 (AMD64)', 0x14C: 'x86 (i386)', 0xAA64: 'ARM64'}
             say (f'* PE machine: {names.get (machine, hex (machine))}, format: {"PE32+ (64 bit)" if magic == 0x20B else hex (magic)}, '
                  f'dll flag: {bool (characteristics & 0x2000)}, sections: {len (sections)}')
@@ -208,30 +251,36 @@ def main ():
                 say (f'* MDID check: developer id + local id stored back to back: {"found" if pair in data else "not found (layout may differ)"} '
                      f'(informational)')
 
+            resources = None
+            walk_error = None
             try:
-                resources = walk_resources (data, sections)
+                mapper = RvaMapper (data, sections)
+                say (f'* .rsrc: data directory rva=0x{resource_rva:x} size=0x{resource_size:x}')
+                resources = walk_resources (data, mapper, resource_rva)
             except PEParseError as error:
-                say (f'* resource walk skipped: {error}')
-                resources = None
+                walk_error = f'{error}'
             except Exception as error:                                # noqa: BLE001 - diagnostics must not break CI
-                say (f'* resource walk skipped: unexpected error {error!r}')
-                resources = None
+                walk_error = f'unexpected error {error!r}'
 
+            if resources is not None and not resources:
+                fail ('the add-on contains no resource at all - ResConv output was not linked')
             if resources:
-                say ('* resources found in the add-on:')
+                say (f'* resources found in the add-on ({len (resources)} type/labels):')
                 for label in sorted (resources, key = str):
                     label_entries = resources[label]
                     ids = sorted ({entry[0] for entry in label_entries}, key = str)
                     total = sum (entry[1] for entry in label_entries)
-                    say (f'    * {label}: {len (label_entries)} data entry/entries, ids {ids[:12]}, {total} bytes')
+                    say (f'    * {label}: {len (label_entries)} data entry/entries, '
+                         f'ids {ids[:16]}, {total} bytes')
                 for label, expected_ids in EXPECTED_RESOURCES.items ():
                     present = {entry[0] for entry in resources.get (label, [])}
                     missing = [res_id for res_id in expected_ids if res_id not in present]
                     if missing:
-                        say (f'* resource check: {label} missing ids {missing} (informational)')
+                        say (f'* resource check: {label} missing id(s) {missing} (informational)')
                     else:
-                        say (f'* resource check: {label} ids {expected_ids} present')
+                        say (f'* resource check: {label} id(s) {expected_ids} present')
             else:
+                say (f'* resource walk skipped: {walk_error}')
                 # Fallback: the resource type names are stored as UTF-16LE strings
                 # in the PE resource directory, so their presence shows that the
                 # resources compiled by ResConv were linked into the add-on.
@@ -241,6 +290,7 @@ def main ():
                 say (f'* resource types found (UTF-16LE scan): {", ".join (present) or "none"}')
                 if missing:
                     say (f'* resource types not detected: {", ".join (missing)} (informational)')
+
         except PEParseError as error:
             fail (f'not a readable PE file: {error}')
         except Exception as error:                                # noqa: BLE001 - diagnostics must not break CI
