@@ -184,6 +184,7 @@ def main ():
             names = {0x8664: 'x64 (AMD64)', 0x14C: 'x86 (i386)', 0xAA64: 'ARM64'}
             say (f'* PE machine: {names.get (machine, hex (machine))}, format: {"PE32+ (64 bit)" if magic == 0x20B else hex (magic)}, '
                  f'dll flag: {bool (characteristics & 0x2000)}, sections: {len (sections)}')
+            say (f'* sections: {", ".join (s[0] for s in sections) or "none"}')
             if machine != 0x8664:
                 fail ('the add-on is not an x64 binary')
             if magic != 0x20B:
@@ -210,14 +211,19 @@ def main ():
             try:
                 resources = walk_resources (data, sections)
             except PEParseError as error:
-                resources = None
                 say (f'* resource walk skipped: {error}')
+                resources = None
+            except Exception as error:                                # noqa: BLE001 - diagnostics must not break CI
+                say (f'* resource walk skipped: unexpected error {error!r}')
+                resources = None
+
             if resources:
                 say ('* resources found in the add-on:')
                 for label in sorted (resources, key = str):
-                    ids = sorted ({entry[0] for entry in resources[label]}, key = str)
-                    sizes = sum (entry[1] for entry in resources[label])
-                    say (f'    * {label}: {len (resources[label])} data entry/entries, ids {ids[:12]}, {sizes} bytes')
+                    label_entries = resources[label]
+                    ids = sorted ({entry[0] for entry in label_entries}, key = str)
+                    total = sum (entry[1] for entry in label_entries)
+                    say (f'    * {label}: {len (label_entries)} data entry/entries, ids {ids[:12]}, {total} bytes')
                 for label, expected_ids in EXPECTED_RESOURCES.items ():
                     present = {entry[0] for entry in resources.get (label, [])}
                     missing = [res_id for res_id in expected_ids if res_id not in present]
@@ -226,7 +232,15 @@ def main ():
                     else:
                         say (f'* resource check: {label} ids {expected_ids} present')
             else:
-                say ('* no .rsrc section found (informational)')
+                # Fallback: the resource type names are stored as UTF-16LE strings
+                # in the PE resource directory, so their presence shows that the
+                # resources compiled by ResConv were linked into the add-on.
+                type_names = sorted (set (list (EXPECTED_RESOURCES) + ['GICN']))
+                present = [name for name in type_names if name.encode ('utf-16-le') in data]
+                missing = [name for name in type_names if name not in present]
+                say (f'* resource types found (UTF-16LE scan): {", ".join (present) or "none"}')
+                if missing:
+                    say (f'* resource types not detected: {", ".join (missing)} (informational)')
         except PEParseError as error:
             fail (f'not a readable PE file: {error}')
         except Exception as error:                                # noqa: BLE001 - diagnostics must not break CI
