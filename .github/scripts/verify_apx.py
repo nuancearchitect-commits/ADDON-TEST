@@ -50,6 +50,13 @@ class PEParseError (Exception):
     pass
 
 
+def safe_text (value) -> str:
+    """Always printable: the Windows console of the CI runner uses codepage 1252
+    and would raise UnicodeEncodeError on stray surrogates or control characters."""
+    text = value if isinstance (value, str) else str (value)
+    return text.encode ('utf-8', 'backslashreplace').decode ('utf-8', 'replace')
+
+
 def read_header (data: bytes):
     """Parse what is needed to locate the PE resource tree.
 
@@ -126,7 +133,7 @@ def directory_entries (data: bytes, offset: int, mapper: RvaMapper, what: str):
         if name_or_id & 0x80000000:
             name_offset = mapper.offset_of (name_or_id & 0x7FFFFFFF)
             length = struct.unpack_from ('<H', data, name_offset)[0]
-            label = data[name_offset + 2:name_offset + 2 + length * 2].decode ('utf-16-le', 'replace')
+            label = safe_text (data[name_offset + 2:name_offset + 2 + length * 2].decode ('utf-16-le', 'replace'))[:32]
         else:
             label = name_or_id
         entries.append ((label, sub))
@@ -134,34 +141,58 @@ def directory_entries (data: bytes, offset: int, mapper: RvaMapper, what: str):
 
 
 def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int, log = None):
-    """Return {type name: [(id, size, rva), ...]} of the resources inside the add-on."""
+    """Return ({type name: [(id, size, rva), ...]}, [parse problem, ...]).
+
+    Every level is parsed defensively: a type that cannot be walked is reported
+    as a problem instead of losing the whole tree (this is a diagnostic helper,
+    not a PE library).
+    """
     if not resource_rva:
         rsrc = next ((s for s in mapper.sections if s[0] == '.rsrc'), None)
         if rsrc is None:
             raise PEParseError ('no resource data directory and no .rsrc section')
         resource_rva = rsrc[1]
 
+    problems = []
     resources = {}
     root_offset = mapper.offset_of (resource_rva)
     named_count, id_count = struct.unpack_from ('<HH', data, root_offset + 12)
     if log:
         log (f'* resource root: file offset 0x{root_offset:x} (rva 0x{resource_rva:x}), '
              f'{named_count} named type(s) + {id_count} type(s) by id')
+
     for type_label, type_sub in directory_entries (data, root_offset, mapper, 'resource type directory'):
         key = type_label if isinstance (type_label, str) else PREDEFINED_TYPES.get (type_label, f'#{type_label}')
         if not type_sub & 0x80000000:
+            problems.append (f'{key}: entry does not point to a directory')
             continue
-        type_what = f'resource type {key!r} directory'
-        for res_id, res_sub in directory_entries (data, mapper.offset_of (type_sub & 0x7FFFFFFF), mapper, type_what):
+        try:
+            id_entries = directory_entries (data, mapper.offset_of (type_sub & 0x7FFFFFFF), mapper,
+                                            f'resource type {key} directory')
+        except PEParseError as error:
+            problems.append (safe_text (f'{key}: {error}'))
+            continue
+        for res_id, res_sub in id_entries:
             if not res_sub & 0x80000000:
+                problems.append (f'{key}/{res_id}: entry does not point to a directory')
                 continue
-            name_what = f'{key!r} id {res_id} directory'
-            for _, lang_entry in directory_entries (data, mapper.offset_of (res_sub & 0x7FFFFFFF), mapper, name_what):
+            try:
+                lang_entries = directory_entries (data, mapper.offset_of (res_sub & 0x7FFFFFFF), mapper,
+                                                   f'{key} id {res_id} directory')
+            except PEParseError as error:
+                problems.append (safe_text (f'{key}/{res_id}: {error}'))
+                continue
+            for _, lang_entry in lang_entries:
                 if lang_entry & 0x80000000:
+                    problems.append (f'{key}/{res_id}: unexpected nested directory')
                     continue
-                res_rva, res_size = struct.unpack_from ('<II', data, mapper.offset_of (lang_entry & 0x7FFFFFFF))
+                try:
+                    res_rva, res_size = struct.unpack_from ('<II', data, mapper.offset_of (lang_entry & 0x7FFFFFFF))
+                except (PEParseError, struct.error) as error:
+                    problems.append (safe_text (f'{key}/{res_id}: {error}'))
+                    continue
                 resources.setdefault (key, []).append ((res_id, res_size, res_rva))
-    return resources
+    return resources, problems
 
 
 def find_needle (blob: bytes, text: str):
@@ -210,11 +241,19 @@ def main ():
         else:
             print (f"* {args.mdid_from_grc} does not exist - MDID check skipped")
 
+    try:
+        sys.stdout.reconfigure (encoding = 'utf-8', errors = 'backslashreplace')
+        sys.stderr.reconfigure (encoding = 'utf-8', errors = 'backslashreplace')
+    except Exception:                                       # noqa: BLE001 - best effort
+        pass
+
     def say (text):
+        text = safe_text (text)
         lines.append (text)
         print (text)
 
     def fail (text):
+        text = safe_text (text)
         failures.append (text)
         print (f'::error::{text}')
 
@@ -257,19 +296,23 @@ def main ():
                      f'(informational)')
 
             resources = None
-            walk_error = None
+            walk_problems = []
             try:
                 mapper = RvaMapper (data, sections)
                 say (f'* .rsrc: data directory rva=0x{resource_rva:x} size=0x{resource_size:x}')
-                resources = walk_resources (data, mapper, resource_rva, say)
+                resources, walk_problems = walk_resources (data, mapper, resource_rva, say)
             except PEParseError as error:
-                walk_error = f'{error}'
+                walk_problems = [safe_text (f'resource tree not parsed: {error}')]
             except Exception as error:                                # noqa: BLE001 - diagnostics must not break CI
-                walk_error = f'unexpected error {error!r}'
+                walk_problems = [safe_text (f'resource tree not parsed: unexpected error {error!r}')]
+            for problem in walk_problems[:8]:
+                say (f'* resource walk: {problem}')
+            if len (walk_problems) > 8:
+                say (f'* resource walk: {len (walk_problems) - 8} more problem(s) not shown')
 
             if resources is not None and not resources:
-                say ('* no resource could be listed by the PE walk (informational - the '
-                     'build already ran ResConv and the string checks below are authoritative)')
+                say ('* no resource could be listed by the PE walk (informational: the build '
+                     'already ran ResConv, and the string checks are the authoritative ones)')
             if resources:
                 say (f'* resources found in the add-on ({len (resources)} type/labels):')
                 for label in sorted (resources, key = str):
@@ -286,7 +329,7 @@ def main ():
                     else:
                         say (f'* resource check: {label} id(s) {expected_ids} present')
             else:
-                say (f'* resource walk skipped: {walk_error}')
+                say ('* resource tree walk interrupted, falling back to a byte scan')
                 # Fallback: the resource type names are stored as UTF-16LE strings
                 # in the PE resource directory, so their presence shows that the
                 # resources compiled by ResConv were linked into the add-on.
@@ -305,7 +348,7 @@ def main ():
     print ('')
     if failures:
         for failure in failures:
-            print (f'FAIL: {failure}')
+            print (f'FAIL: {safe_text (failure)}')
     else:
         print ('OK: the .apx contains the expected bilingual resources')
 
