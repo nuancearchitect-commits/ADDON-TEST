@@ -233,16 +233,23 @@ Convention de livraison : une poussée dont le message de commit commence par
 
 ## 8. Builds validés par la CI (Preuves)
 
-Dernier run **vert** sur cette branche :
-[Actions run 44626071317](https://github.com/nuancearchitect-commits/ADDON-TEST/actions/runs/44626071317)
+Dernier run **vert** sur le HEAD de cette branche :
+[Actions run 44626545033](https://github.com/nuancearchitect-commits/ADDON-TEST/actions/runs/44626545033)
 — 2 jobs, `Archicad 29 (DevKit 29.3100)` et `Archicad 30 (DevKit 30.3000)`,
-toutes les étapes vertes, y compris « Locate, check and verify the produced .apx ».
+toutes les étapes vertes, y compris « Locate, check and verify the produced .apx »
+dont le rapport complet est dans le résumé de chaque job.
 
-| Livrable | Artefact Actions | Taille | SHA-256 |
+| Livrable | Artefact Actions | Taille | SHA-256 (run 44626545033) |
 |---|---|---|---|
-| `TEST-AC29.apx` | `TEST-AC29-apx` | 185 856 o | `96baffea2a3770374536e7d6513fd53a69b4bf195dcad1c28ecc6adbec94d176` |
-| `TEST-AC30.apx` | `TEST-AC30-apx` | 54 272 o | `f417f4397650a01c7fb86a8aee7e974136f1f2ed8d905626014215879f3a5888` |
-| journal de compilation | `build-log-ac29`, `build-log-ac30` | ~1,2 Ko chacun | — |
+| `TEST-AC29.apx` | `TEST-AC29-apx` (zip 35 615 o) | 185 856 o | `9643503aa85c510baf9e6499cffa72e7261c626682e69bd5cbd4faa79b63fa79` |
+| `TEST-AC30.apx` | `TEST-AC30-apx` (zip 30 203 o) | 54 272 o | `699b1213adeb78b9dc0a990101278bd4d96b8e31e8de552afa4cb128bfb340cc` |
+| journal de compilation | `build-log-ac29`, `build-log-ac30` | ~1,1 Ko chacun | — |
+
+⚠️ le SHA-256 change à chaque rebuild : `link.exe` horodate le PE (TimeDateStamp)
+et la compilation n’est **pas reproductible** octet pour octet. Le SHA affiché
+dans l’annotation du run sert à identifier **ce** build, pas à valider un
+téléchargement ultérieur ; la taille et la table de ressources, elles, sont
+stables.
 
 Contrôles passés pour **les deux** `.apx` (visibles en annotation du job et dans
 le résumé) :
@@ -263,8 +270,8 @@ le résumé) :
 Récupérer les `.apx` (dépôt public) :
 
 ```bash
-gh run download 44626071317 --repo nuancearchitect-commits/ADDON-TEST --name TEST-AC29-apx
-gh run download 44626071317 --repo nuancearchitect-commits/ADDON-TEST --name TEST-AC30-apx
+gh run download 44626545033 --repo nuancearchitect-commits/ADDON-TEST --name TEST-AC29-apx
+gh run download 44626545033 --repo nuancearchitect-commits/ADDON-TEST --name TEST-AC30-apx
 ```
 
 ou via la page du run, section *Artifacts*. L’artefact contient
