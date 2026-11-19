@@ -280,12 +280,21 @@ jobs:
           mkdir -p dist
           target="dist/${ADDON_NAME}-AC${AC_VERSION}.apx"
           cp -f "$found" "$target"
+          rc=0
+          set -o pipefail   # so that a failing verification is not hidden by tee
           python .github/scripts/verify_apx.py "$target" \
             --expect "Empty palette - starting point of your add-on." \
             --expect "Palette vide - point de départ de votre add-on." \
             --expect "Empty palette to start from. Interface available in English and French." \
             --mdid-from-grc RFIX/AddOnFix.grc \
-            --report summary_apx.md
+            --report summary_apx.md 2>&1 | tee verify-ac${AC_VERSION}.txt || rc=$?
+          if [ "$rc" != "0" ]; then
+            # Surface the whole verification output as annotations: the artifact
+            # log may not be downloadable, the annotations always are.
+            sed -e 's/\r//' -e "s/^/::error::[verify AC${AC_VERSION}] /" verify-ac${AC_VERSION}.txt | head -30
+            echo "::error::[verify AC${AC_VERSION}] exit code $rc - the produced .apx did not pass verification"
+            exit "$rc"
+          fi
           sha=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
           if [ -z "$sha" ]; then sha=$(certutil -hashfile "$target" SHA256 2>/dev/null | sed -n 2p | tr -d ' '); fi
           echo "* SHA-256: \`$sha\`" >> summary_apx.md
