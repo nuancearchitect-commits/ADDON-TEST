@@ -233,11 +233,17 @@ Convention de livraison : une poussée dont le message de commit commence par
 
 ## 8. Builds validés par la CI (Preuves)
 
-Dernier run **vert** sur le HEAD de cette branche :
+Chaque poussée sur `arena/**` ou `main` reconstruit et re-vérifie les deux `.apx` :
+le contrôle de complétude fait partie du workflow, donc un run vert **est** la
+preuve que les livrables existent et contiennent les ressources FR+EN.
+Run documenté ci-dessous :
 [Actions run 44626545033](https://github.com/nuancearchitect-commits/ADDON-TEST/actions/runs/44626545033)
 — 2 jobs, `Archicad 29 (DevKit 29.3100)` et `Archicad 30 (DevKit 30.3000)`,
 toutes les étapes vertes, y compris « Locate, check and verify the produced .apx »
-dont le rapport complet est dans le résumé de chaque job.
+dont le rapport complet est dans le résumé de chaque job. Dernier run du HEAD en
+date : [44626818970](https://github.com/nuancearchitect-commits/ADDON-TEST/actions/runs/44626818970)
+(pareillement vert ; ne peut pas se référencer lui-même, le commit qui changerait
+le lien déclenchant un nouveau run).
 
 | Livrable | Artefact Actions | Taille | SHA-256 (run 44626545033) |
 |---|---|---|---|
