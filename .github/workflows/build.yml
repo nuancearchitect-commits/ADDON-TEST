@@ -289,6 +289,10 @@ jobs:
           if [ -z "$sha" ]; then sha=$(certutil -hashfile "$target" SHA256 2>/dev/null | sed -n 2p | tr -d ' '); fi
           echo "* SHA-256: \`$sha\`" >> summary_apx.md
           echo "::notice::TEST-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
+          # Repeat the binary verification results as an annotation: it stays
+          # readable without downloading the artifact.
+          checks=$(sed -e 's/\r//' -e 's/[*`#|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-1000)
+          echo "::notice::TEST-AC${AC_VERSION}.apx checks: ${checks}"
           {
             echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
             echo ""
