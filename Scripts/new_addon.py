@@ -215,6 +215,34 @@ def rewrite_workflow_matrix (dest: pathlib.Path, args):
     return True
 
 
+def normalize_workflow_triggers (dest: pathlib.Path):
+    """Point the workflow at the branch the new project actually starts from.
+
+    The template also builds its own arena/** working branches; a fresh project
+    should build its default branch and its pull requests, nothing else.
+    """
+    workflow = dest / '.github' / 'workflows' / 'build.yml'
+    if not workflow.is_file ():
+        return ''
+    branch = run (['git', '-C', str (dest), 'symbolic-ref', '--quiet', '--short', 'HEAD']).stdout.strip ()
+    branch = branch or 'main'
+    text = workflow.read_text (encoding = 'utf-8')
+    on_block = re.search (r'^on:\n(?:[ \t].*\n|\n)*', text, re.M)
+    if not on_block:
+        return ''
+    block = on_block.group (0)
+    new_block = re.sub (r"(push:\n(?:[ \t]+[^\n]*\n)*?[ \t]+branches:\n)[ \t]+- '[^']*'\n(?:[ \t]+- '[^']*'\n)*",
+                        lambda m: m.group (1) + f"      - '{branch}'\n", block, count = 1)
+    if 'pull_request:' not in new_block and branch != 'main':
+        new_block = new_block.replace ('on:\n', f"on:\n  pull_request:\n    branches:\n      - '{branch}'\n", 1)
+    elif 'pull_request:' not in new_block:
+        new_block = new_block.replace ('on:\n', "on:\n  pull_request:\n", 1)
+    if new_block == block:
+        return ''
+    workflow.write_text (text[:on_block.start ()] + new_block + text[on_block.end ():], encoding = 'utf-8')
+    return branch
+
+
 NEW_README = """# {name} - Archicad add-on (.apx)
 
 Starté from the tested `TEST` add-on template: official Graphisoft build tools
@@ -341,8 +369,8 @@ def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
         report.append ('.git already present: kept as is'
                        + ('' if branch == 'main' else f' (pushing to {branch})'))
         if branch != 'main':
-            report.append ('::warning::the workflow uploads the .apx only on main (it only checks the build on a pull '
-                           f'request): merge {branch} into main, or rename it, to get the artifacts')
+            report.append (f'* the workflow was retargeted at {branch} by this script, so the first push does '
+                           'run it and upload the .apx (a new repository on main needs no change)')
 
     if not (dest / 'Tools' / 'BuildAddOn.py').is_file ():
         if (dest / 'Tools').exists ():
@@ -372,7 +400,7 @@ def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
         report.append ('the first commit did NOT happen ('
                        + (detail[-1][:120] if detail else 'unknown reason')
                        + ') - usually the git identity: git config user.name/user.email, then git commit -m "..."')
-        report.append ('* nothing was pushed: the repository stays local until the commit exists')
+        report.append ('nothing was pushed: the repository stays local until the commit exists')
     if not committed and not git (dest, 'rev-parse', 'HEAD', optional = True).returncode:
         committed = True          # an existing repository with history can still be pushed
 
@@ -719,10 +747,13 @@ def main ():
         print (f'* new palette GUID: {guid}')
     if write_project_readme (dest, args):
         print ('* README.md written for the new add-on; the template documentation is TEMPLATE.md')
+    ci_branch = normalize_workflow_triggers (dest)
     if rewrite_workflow_matrix (dest, args):
         unknown = [v for v in args.ac_versions if str (v) not in DEVKIT_TAGS]
         print (f'* CI matrix: Archicad {", ".join (str (v) for v in args.ac_versions)}'
               + (f' - FILL-ME the DevKit tag of {unknown}, then check Tools/APIDevKitLinks.json' if unknown else ''))
+    if ci_branch:
+        print (f'* CI triggers rewritten for this project: push on {ci_branch} + pull requests')
 
     # the language folders: create the ones the build needs, from the first one
     folders = {lang: dest / f'R{lang}' for lang in args.languages}

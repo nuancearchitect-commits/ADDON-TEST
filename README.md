@@ -365,10 +365,15 @@ cd ADDON-TEST && python Scripts/new_addon.py --from ../bim.json
 ```
 
 `repository.remoteUrl` au lieu de `create: true` pousse vers un dépôt déjà créé
-(`git remote add origin` + `git push`). Les deux seuls gestes qui restent hors
-portée du script, parce que l'API GitHub ne les expose pas : cocher **Template
-repository** dans *Settings*, et merger sur `main` (la CI ne publie les `.apx`
-que sur cette branche).
+(`git remote add origin` + `git push`). Le script réécrit aussi les déclencheurs du workflow dans le projet généré : le
+modèle se construit sur `main` et sur `arena/**`, un nouveau projet doit se
+construire sur **sa** branche de départ (et sur ses pull requests) — c'est ce
+qu'on obtient, `push` + `pull_request` sur la branche où l'on se trouve, donc le
+premier `git push` lance déjà un vrai build avec artefacts.
+
+Il reste deux gestes hors de portée du script, parce que l'API GitHub ne les
+expose pas : cocher **Template repository** dans *Settings*, et merger sur `main`
+si l'on veut que le modèle lui-même serve de départ aux clones futurs.
 
 `--in-place` fait la même chose **dans le clone lui-même**, sans `dest` : le
 clone du modèle devient le projet. Il refuse si l'arbre de travail est sale, et
@@ -404,7 +409,8 @@ sous-module), puis :
 * écrit un `README.md` pour le nouveau projet et conserve cette documentation
   sous `TEMPLATE.md` ;
 * règle la matrice AC de `.github/workflows/build.yml` (un tag DevKit inconnu →
-  `'FILL-ME'`, donc la CI refuse de deviner) ;
+  `'FILL-ME'`, donc la CI refuse de deviner) et remplace ses déclencheurs par la
+  branche du projet + ses pull requests ;
 * crée les dossiers de langue `R<XXX>/` manquants à partir de `RINT/` en écrivant
   un `TODO: translate` en tête (une copie non traduite n'est pas une
   localisation), et retire ceux qui ne sont pas dans `config.json` ;
