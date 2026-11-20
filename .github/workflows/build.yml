@@ -3,7 +3,7 @@ name: Build .apx (Archicad 29 / 30, Windows)
 # Builds the Archicad add-on with the official Graphisoft tools
 # (submodule Tools = GRAPHISOFT/archicad-addon-cmake-tools) on a Windows
 # GitHub-hosted runner with MSVC, and uploads one bilingual .apx per Archicad
-# version: TEST-AC29.apx, TEST-AC30.apx.
+# version, named <addOnName>-AC<version>.apx (the name comes from config.json).
 #
 # Delivery convention: commits whose message starts with "[wip]" are built
 # WITHOUT --forDistribution (the .apx is then flagged as a private build by the
@@ -37,7 +37,6 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-  ADDON_NAME: TEST
   DEVKIT_REPO: GRAPHISOFT/archicad-api-devkit
 
 defaults:
@@ -94,6 +93,9 @@ jobs:
             echo "* Tools submodule: \`$(git -C Tools rev-parse HEAD)\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Read the add-on identity from config.json'
+        run: python .github/scripts/read_config.py --config config.json
 
       - name: 'Delivery mode ([wip] convention)'
         id: delivery
@@ -282,15 +284,15 @@ jobs:
           cp -f "$found" "$target"
           rc=0
           set -o pipefail   # so that a failing verification is not hidden by tee
+          # --auto-from reads the expected resource ids and UI strings back from the
+          # add-on sources: nothing product specific has to be written in this file.
           python .github/scripts/verify_apx.py "$target" \
-            --expect "Empty palette - starting point of your add-on." \
-            --expect "Palette vide - point de départ de votre add-on." \
-            --expect "Empty palette to start from. Interface available in English and French." \
-            --mdid-from-grc RFIX/AddOnFix.grc \
+            --auto-from . \
+            --language "$ADDON_DEFAULT_LANGUAGE" \
             --report summary_apx.md > verify-ac${AC_VERSION}.txt 2>&1 || rc=$?
           cat verify-ac${AC_VERSION}.txt
           {
-            echo "### Binary verification of \`TEST-AC${AC_VERSION}.apx\` (exit code $rc)"
+            echo "### Binary verification of \`${ADDON_NAME}-AC${AC_VERSION}.apx\` (exit code $rc)"
             echo ""
             echo '```'
             sed -e 's/\r//' verify-ac${AC_VERSION}.txt
@@ -308,16 +310,16 @@ jobs:
           sha=$(sha256sum "$target" 2>/dev/null | cut -d' ' -f1)
           if [ -z "$sha" ]; then sha=$(certutil -hashfile "$target" SHA256 2>/dev/null | sed -n 2p | tr -d ' '); fi
           echo "* SHA-256: \`$sha\`" >> summary_apx.md
-          echo "::notice::TEST-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
+          echo "::notice::${ADDON_NAME}-AC${AC_VERSION}.apx ready: $size bytes, sha256=$sha (from $found)"
           # Repeat the binary verification results as an annotation: it stays
           # readable without downloading the artifact.
           checks=$(sed -e 's/\r//' -e 's/[*`|]/ /g' summary_apx.md | tr '\n' '|' | cut -c1-400)
-          echo "::notice::TEST-AC${AC_VERSION}.apx checks: ${checks}"
+          echo "::notice::${ADDON_NAME}-AC${AC_VERSION}.apx checks: ${checks}"
           res=$(grep -a -E "resource summary|resource check|resource walk|resource root|\.rsrc|data entry|entries, ids" verify-ac${AC_VERSION}.txt \
                  | sed -e 's/\r//' -e 's/[*`|]/ /g' | tr '\n' '|' | cut -c1-1200)
-          echo "::notice::TEST-AC${AC_VERSION}.apx resources: ${res}"
+          echo "::notice::${ADDON_NAME}-AC${AC_VERSION}.apx resources: ${res}"
           {
-            echo "### Artifact \`TEST-AC${AC_VERSION}.apx\`"
+            echo "### Artifact \`${ADDON_NAME}-AC${AC_VERSION}.apx\`"
             echo ""
             cat summary_apx.md
             echo ""
@@ -327,7 +329,7 @@ jobs:
       - name: 'Upload the .apx artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: TEST-AC${{ matrix.acVersion }}-apx
+          name: ${{ env.ADDON_NAME }}-AC${{ matrix.acVersion }}-apx
           path: ${{ env.APX_PATH }}
           if-no-files-found: error
           retention-days: 90
@@ -412,7 +414,7 @@ jobs:
             echo "#### Build tree"
             echo '```'
             find Build -maxdepth 5 -type d 2>/dev/null | sed -n '1,40p'
-            ls -la "Build/TEST/${AC_VERSION}" 2>/dev/null || true
+            ls -la "Build/${ADDON_NAME}/${AC_VERSION}" 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Diagnostics written to the job summary (full log: artifact build-log-ac${AC_VERSION})."

@@ -234,6 +234,96 @@ def walk_resources (data: bytes, mapper: RvaMapper, resource_rva: int, log = Non
     return resources, problems
 
 
+# --- automatic discovery of what the add-on sources declare -------------------
+#
+# These helpers let the CI verify *any* add-on built on this template without
+# repeating the resource ids and the UI strings inside the workflow: they are
+# read back from the sources themselves (Src/ResourceIds.hpp + the .grc files).
+
+WINDOWS_TYPE_NAMES = {
+    'STR#': ['STRS', 'STR#'],          # ResConv renames the Mac type names on Windows
+    'GDLG': ['GSDG', 'GDLG'],
+    'GICN': ['GROUP_ICON', 'ICON'],
+}
+
+TYPE_LINE_RE = re.compile (r"^\s*'([A-Za-z0-9#]{1,4})'\s+(\d+|[A-Za-z_][A-Za-z0-9_]*)")
+DEFINE_RE = re.compile (r'^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+(0[xX][0-9a-fA-F]+|\d+)\s*(?:/.*)?$')
+STRING_RE = re.compile (r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def read_defines (path: pathlib.Path):
+    """The #define id map of the add-on (also seen by ResConv, which preprocesses the .grc)."""
+    if not path.is_file ():
+        return {}
+    defines = {}
+    for line in path.read_text (encoding = 'utf-8-sig', errors = 'replace').split ('\n'):
+        match = DEFINE_RE.match (line)
+        if match:
+            defines[match.group (1)] = int (match.group (2), 0)
+    return defines
+
+
+def parse_grc_files (grc_paths, defines):
+    """Return ({type: {ids}}, {type: {id: [strings]}}) of the given .grc files.
+
+    Only the quoted strings *inside* a 'STR#' body are considered UI strings:
+    they are the ones ResConv writes verbatim into the STRS resource.
+    """
+    resources = {}
+    strings = {}
+    for grc in grc_paths:
+        if not grc.is_file ():
+            continue
+        current_type = None
+        current_id = None
+        depth = 0
+        for raw_line in grc.read_text (encoding = 'utf-8-sig', errors = 'replace').split ('\n'):
+            line = re.sub (r'/\*.*?\*/', '', raw_line)
+            if depth == 0:
+                match = TYPE_LINE_RE.match (line)
+                if not match:
+                    continue
+                current_type = match.group (1)
+                name = match.group (2)
+                current_id = int (name, 0) if name[0].isdigit () else defines.get (name, None)
+                if current_id is None:
+                    current_type = None
+                    continue
+                resources.setdefault (current_type, set ()).add (current_id)
+                depth = line.count ('{') - line.count ('}')
+                continue
+            stripped = line.strip ()
+            if current_type == 'STR#':
+                for text in STRING_RE.findall (line):
+                    cleaned = text.strip ()
+                    if len (cleaned) >= 4 and not re.search (r'[\^%]', cleaned):
+                        strings.setdefault ((current_type, current_id), []).append (cleaned)
+            depth += line.count ('{') - line.count ('}')
+            if depth <= 0:
+                depth = 0
+                current_type = None
+    return resources, strings
+
+
+def discover (project_dir: pathlib.Path, language: str):
+    """Read the add-on sources: ids, resource types and UI strings to expect."""
+    project_dir = pathlib.Path (project_dir)
+    defines = read_defines (project_dir / 'Src' / 'ResourceIds.hpp')
+    grc_paths = sorted ((project_dir / 'RFIX').glob ('*.grc'))
+    if language:
+        grc_paths += sorted ((project_dir / ('R' + language)).glob ('*.grc'))
+    resources, strings = parse_grc_files (grc_paths, defines)
+
+    mdid = []
+    for grc in grc_paths:
+        text = grc.read_text (encoding = 'utf-8-sig', errors = 'replace')
+        match = re.search (r"'MDID'\s+\d+[^{}]*\{\s*(\d+)\D+(\d+)", text)
+        if match:
+            mdid = [int (match.group (1)), int (match.group (2))]
+            break
+    return resources, strings, mdid, [str (p.relative_to (project_dir)) for p in grc_paths]
+
+
 def find_needle (blob: bytes, text: str):
     """Find a UI string the way ResConv stores it on Windows (codepage 1252),
     falling back to UTF-16LE and UTF-8."""
@@ -260,31 +350,45 @@ def main ():
     parser.add_argument ('--min-size', type = int, default = 4096,
                          help = 'Minimum accepted size in bytes (default: 4096)')
     parser.add_argument ('--report', help = 'Optional file receiving a markdown report')
+    parser.add_argument ('--auto-from', dest = 'auto_from', metavar = 'PROJECT_DIR',
+                         help = 'Discover the expected resources and UI strings from the add-on sources '
+                                '(Src/ResourceIds.hpp + RFIX/*.grc + R<language>/*.grc) instead of '
+                                'repeating them on the command line')
+    parser.add_argument ('--language', default = '',
+                         help = 'Language folder compiled by this build (e.g. INT); its strings are '
+                                'expected too when --auto-from is used')
     args = parser.parse_args ()
 
     path = pathlib.Path (args.apx)
     lines = []
     failures = []
 
-    if args.mdid_from_grc:
-        grc_path = pathlib.Path (args.mdid_from_grc)
-        if grc_path.is_file ():
-            grc_text = grc_path.read_text (encoding = 'utf-8-sig', errors = 'replace')
-            match = re.search (r"'MDID'\s+(\d+)[^{}]*\{\s*(\d+)\D+(\d+)", grc_text)
-            if match:
-                print (f"* 'MDID' {match.group (1)} declared in {args.mdid_from_grc}: "
-                       f"developer id {match.group (2)}, local id {match.group (3)}")
-                args.mdid = [int (match.group (2)), int (match.group (3))]
-            else:
-                print (f"* no 'MDID' resource found in {args.mdid_from_grc}")
-        else:
-            print (f"* {args.mdid_from_grc} does not exist - MDID check skipped")
-
-    try:
-        sys.stdout.reconfigure (encoding = 'utf-8', errors = 'backslashreplace')
-        sys.stderr.reconfigure (encoding = 'utf-8', errors = 'backslashreplace')
-    except Exception:                                       # noqa: BLE001 - best effort
-        pass
+    if args.auto_from:
+        resources_expected, strings_expected, mdid, used = discover (pathlib.Path (args.auto_from), args.language)
+        EXPECTED_RESOURCES.clear ()
+        EXPECTED_SUBSTR.clear ()
+        for label, ids in sorted (resources_expected.items (), key = lambda item: str (item[0])):
+            for res_id in sorted (ids):
+                if label == 'GICN':
+                    # ResConv turns 'GICN' + the SVG into real Windows icon groups whose
+                    # names contain the GICN id (I10001&96, I10001&192, ...&D for dark mode).
+                    EXPECTED_SUBSTR.setdefault ('GROUP_ICON', []).append (str (res_id))
+                    continue
+                EXPECTED_RESOURCES.setdefault (label, []).append (res_id)
+        for (label, res_id), texts in strings_expected.items ():
+            for text in texts:
+                if text not in args.expect:
+                    args.expect.append (text)
+        if mdid and not args.mdid:
+            args.mdid = mdid
+        print (f'* discovered from {args.auto_from} (language {args.language or "default"}):')
+        print (f'    .grc files: {", ".join (used) or "none"}')
+        print (f'* expected resources: '
+               + ', '.join (f'{name} {sorted (ids)}' for name, ids in sorted (EXPECTED_RESOURCES.items (), key = lambda i: str (i[0]))))
+        print (f'* expected UI strings: {len (args.expect)}')
+        if args.mdid:
+            print (f'* expected MDID numbers: {args.mdid}')
+        print ('')
 
     def say (text):
         text = safe_text (text)
@@ -364,8 +468,18 @@ def main ():
                     summary_parts.append (f'{label} ({len (entries)} entries, ids {ids})')
                 say ('* resource summary: ' + ', '.join (summary_parts))
                 for label, expected_ids in EXPECTED_RESOURCES.items ():
-                    present = {entry[0] for entry in resources.get (label, [])}
+                    # ResConv may rename a Mac type name for the Windows resource directory.
+                    pe_names = WINDOWS_TYPE_NAMES.get (label, [label])
+                    found_name = None
+                    present = set ()
+                    for name in pe_names:
+                        if name in resources:
+                            found_name = name
+                            present |= {entry[0] for entry in resources[name]}
                     missing = [res_id for res_id in expected_ids if res_id not in present]
+                    if found_name and found_name != label:
+                        say (f'* resource check: {label} is stored as the {found_name} type '
+                             f'(ResConv naming)')
                     if missing and not walk_problems:
                         fail (f'resource check: {label} missing id(s) {missing} - the GRC resource '
                               f'was not compiled into this add-on')
@@ -377,13 +491,14 @@ def main ():
                     present_ids = [str (entry[0]) for entry in resources.get (label, [])]
                     hit = [needle for needle in needles
                            if any (needle in res_id for res_id in present_ids)]
-                    if hit:
+                    missing_needles = [needle for needle in needles if needle not in hit]
+                    if not missing_needles:
                         say (f'* resource check: {label} present for {", ".join (hit)}')
                     elif not walk_problems:
-                        fail (f'resource check: {label} has no id containing {needles} - the icon '
+                        fail (f'resource check: {label} has no id containing {missing_needles} - the icon '
                               f'resource was not compiled into this add-on')
                     else:
-                        say (f'* resource check: {label} has no id containing {needles} (informational)')
+                        say (f'* resource check: {label} has no id containing {missing_needles} (informational)')
             else:
                 say ('* resource tree walk interrupted, falling back to a byte scan')
                 # Fallback: the resource type names are stored as UTF-16LE strings

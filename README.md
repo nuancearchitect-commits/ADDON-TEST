@@ -58,7 +58,9 @@ RFIX/TestPalette.grc        # 'STR#' bilingue + 'GDLG'/'DLGH' de la palette — 
 RFIX/Images/AddOnIcon_18x18.svg
 RFIX.win/AddOnMain.rc2      # ressource native Windows (icône ACAP.ico du DevKit)
 .github/workflows/build.yml # CI Windows : matrice AC29/AC30, cache DevKit, artefacts .apx
-.github/scripts/verify_apx.py# validation binaire du .apx (PE x64, chaînes FR+EN, ressources)
+.github/scripts/verify_apx.py# validation binaire du .apx (PE x64, ressources, chaînes par langue)
+.github/scripts/read_config.py# exporte l'identite de config.json vers la CI ($GITHUB_ENV)
+Scripts/new_addon.py         # genere un NOUVEAU projet a partir de ce modele (voir §11)
 ```
 
 **Ressources au format GRC Graphisoft** : la syntaxe est celle du template
@@ -329,3 +331,78 @@ Archicad. Tests manuels recommandés, par version (29 et 30) :
   cette étape serait la première à casser (`error RC2135`).
 * `macOS` n’est pas construit ici (le template le permettrait, la demande
   porte sur Windows).
+
+## 11. Réutiliser ce dépôt comme départ pour un autre add-on
+
+Le modèle est **volontairement sans nom de produit câblé** : tout part de
+`config.json` (nom, description, langues, version) et des fichiers `.grc`.
+Ni le workflow ni le script de vérification ne citent `TEST`. Deux façons de
+partir de là.
+
+### a) Le plus simple : le script de génération
+
+```bash
+python Scripts/new_addon.py \
+  --name WallKit \
+  --description "Outils de murs - custom wall tools" \
+  --developer-id 944130148 --local-id 2158966928 \
+  --dest ../WallKit \
+  --languages INT,FRA --ac-versions 29,30
+```
+
+Il copie les 23 fichiers suivis par git (jamais `Build/`, jamais le contenu de
+`Tools/`), puis :
+
+* renomme l'identité partout : classes/fichiers `Test*` → `WallKit*`, macros
+  `ID_TEST_*` → `ID_WALLKIT_*`, titre/description `'STR#'`, garde d'en-tête du
+  PCH, titres de la palette ;
+* réécrit `config.json` (nom, description, version, langues, copyright) ;
+* remplace les deux nombres du bloc `'MDID'` par ceux passés en argument
+  (**obligatoires** : rien n'est inventé ni réutilisé d'un autre add-on) ;
+* régénère un **GUID de palette** aléatoire (sinon la nouvelle fenêtre hériterait
+  de la position mémorisée de l'ancienne) ;
+* écrit un `README.md` pour le nouveau projet et conserve cette documentation
+  sous `TEMPLATE.md` ;
+* règle la matrice AC de `.github/workflows/build.yml` (un tag DevKit inconnu →
+  `'FILL-ME'`, donc la CI refuse de deviner) ;
+* crée les dossiers de langue `R<XXX>/` manquants à partir de `RINT/` en écrivant
+  un `TODO: translate` en tête (une copie non traduite n'est pas une
+  localisation), et retire ceux qui ne sont pas dans `config.json` ;
+* **auto-vérifie** le résultat : chaque id utilisé par un `.grc` est bien un
+  `#define` de `Src/ResourceIds.hpp`, chaque `#include` local existe, et aucun
+  token `TEST`/`Test` ne traîne. Sortie non nulle si une de ces règles casse.
+
+Il affiche ensuite les commandes `git init` / `git submodule add … Tools` /
+`git -C Tools checkout <sha épinglé>` à coller. Le projet généré n'a **aucun**
+secret et se construit exactement comme ici.
+
+### b) À la main (cloner puis retoucher 5 endroits)
+
+`config.json`, le bloc `'MDID'` de `RFIX/AddOnFix.grc`, les chaînes de
+`RINT/AddOn.grc`, le GUID de `Src/TestPalette.cpp`, la matrice du workflow. Le
+reste (outillage, cache, vérification, artefacts) suit automatiquement.
+
+### Ce qui est réutilisé tel quel, et pourquoi ça tient
+
+| Élément | Comportement pour un nouveau projet |
+|---|---|
+| `Tools/` (sous-module épinglé) | mêmes scripts officiels ; `BuildAddOn.py` télécharge le DevKit de **chaque** version de la matrice |
+| `.github/workflows/build.yml` | nom du livrable, langues et attente de ressources lus dans `config.json` ; artefacts `<addOnName>-AC<ver>-apx` |
+| `.github/scripts/verify_apx.py --auto-from .` | **relit les `.grc` du projet** pour reconstituer les ids de ressources et les chaînes UI à trouver dans le binaire : pas de liste à maintenir à la main quand on ajoute une ressource |
+| Convention `[wip]` | même règle : message de commit commençant par `[wip]` → build sans `--forDistribution` |
+
+Un projet généré par `new_addon.py` est donc **aussi** validé par la CI dès la
+première poussée : si un `.grc` déclare une ressource que `ResConv` n'a pas liée,
+le job rouge avec la ligne exacte du rapport de vérification.
+
+### Ajouts futurs usuels
+
+* **Autre version d'Archicad** : une ligne dans la matrice + vérifier le tag dans
+  `Tools/APIDevKitLinks.json` (le CI refuse déjà une divergence).
+* **Autre langue** : l'ajouter à `languages` de `config.json` + créer `R<XXX>/`.
+* **Plusieurs `.apx` localisés** (un par langue) plutôt qu'un bilingue :
+  `python Tools/BuildAddOn.py --configFile config.json -l` — voir §3.
+* **Dépôt modèle GitHub** : marquer ce dépôt « Template repository » dans *Settings*
+  permet `gh repo create MonAddOn --template nuancearchitect-commits/ADDON-TEST` ;
+  ce drapeau se règle dans l'interface GitHub (l'API ne l'expose pas à la
+  modification), puis le script ci-dessus reste utile pour l'identité.
