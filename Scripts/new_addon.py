@@ -20,6 +20,7 @@ them, the script stops.
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -62,22 +63,36 @@ TEMPLATE_TOKENS = ('TEST', 'Test')
 
 
 def run (args, cwd = None, capture = True):
-    return subprocess.run (args, cwd = cwd, capture_output = capture, text = True)
+    """Run a command and return the CompletedProcess: every caller decides what is fatal."""
+    return subprocess.run (args, cwd = str (cwd) if cwd else None, capture_output = capture, text = True)
+
+
+def is_skipped (path, root):
+    """Never rewrite the Tools submodule, a build tree or the git metadata."""
+    try:
+        rel = path.relative_to (root)
+    except ValueError:
+        return True
+    return bool (set (rel.parts) & ({'Tools', 'Build', 'dist', 'out', '.git', '__pycache__'} | EXCLUDED_DIRS))
 
 
 def list_project_files (source: pathlib.Path):
     """The files that make up the template (never a build tree, never Tools/)."""
     out = run (['git', '-C', str (source), 'ls-files'])
     if out.returncode == 0:
-        names = [line for line in out.stdout.splitlines () if line and line != 'Tools']
-        for extra in ('.gitignore', '.gitmodules'):
-            if (source / extra).is_file () and extra not in names:
-                names.append (extra)
+        # 'Tools' (the gitlink) and '.gitmodules' are not copied: the new project
+        # registers the submodule itself, at the commit pinned by the template.
+        skip = {'Tools', '.gitmodules'}
+        names = [line for line in out.stdout.splitlines () if line and line not in skip]
+        if (source / '.gitignore').is_file () and '.gitignore' not in names:
+            names.append ('.gitignore')
         return sorted (names)
     names = []
     for path in sorted (source.rglob ('*')):
         rel = path.relative_to (source)
         if '.git' in rel.parts or EXCLUDED_DIRS.intersection (rel.parts) or not path.is_file ():
+            continue
+        if str (rel).replace ('\\', '/') in ('.gitmodules', 'Tools'):
             continue
         names.append (str (rel).replace ('\\', '/'))
     return names
@@ -101,6 +116,8 @@ def rename_identifiers (dest: pathlib.Path, name: str):
     for path in sorted (dest.rglob ('*')):
         if not path.is_file () or path.suffix.lower () not in TEXT_SUFFIXES:
             continue
+        if is_skipped (path, dest):
+            continue
         try:
             text = path.read_text (encoding = 'utf-8')
         except UnicodeDecodeError:
@@ -117,6 +134,8 @@ def rename_identifiers (dest: pathlib.Path, name: str):
     for path in sorted (dest.rglob ('*')):
         base = path.name
         if not path.is_file () or not base.startswith ('Test'):
+            continue
+        if is_skipped (path, dest):
             continue
         stem = base[4:]
         target = path.with_name (name + stem)
@@ -271,6 +290,167 @@ def write_project_readme (dest: pathlib.Path, args):
     return kept.is_file ()
 
 
+TOOLS_URL_FALLBACK = 'https://github.com/GRAPHISOFT/archicad-addon-cmake-tools.git'
+
+
+def read_tools_pin (source: pathlib.Path):
+    """The submodule url (from .gitmodules) and the commit pinned by the template."""
+    url = ''
+    gitmodules = source / '.gitmodules'
+    if gitmodules.is_file ():
+        match = re.search (r'url\s*=\s*(\S+)', gitmodules.read_text (encoding = 'utf-8'))
+        url = match.group (1) if match else ''
+    url = url or TOOLS_URL_FALLBACK
+    sha = ''
+    out = run (['git', '-C', str (source), 'ls-files', '-s', 'Tools'])
+    if out.returncode == 0:
+        match = re.search (r'\b([0-9a-f]{40})\b', out.stdout)
+        sha = match.group (1) if match else ''
+    return url, sha
+
+
+def git (dest: pathlib.Path, *args, optional = False):
+    """Run git in dest; report (never abort the generation) when optional."""
+    out = run (['git', *[str (a) for a in args]], cwd = str (dest))
+    if out.returncode and not optional:
+        raise SystemExit (f'::error::git {" ".join (str (a) for a in args)} failed: '
+                          f'{(out.stderr or out.stdout).strip ()[:400]}')
+    return out
+
+
+def current_branch (dest: pathlib.Path, default = 'main'):
+    """The branch HEAD points at, or `default` when the repository has no commit yet."""
+    out = run (['git', '-C', str (dest), 'symbolic-ref', '--quiet', '--short', 'HEAD'])
+    return out.stdout.strip () or default
+
+
+def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
+    """git init, Tools submodule at the pinned commit, first commit, then the
+    GitHub repository. A missing tool is reported as a next step, it never
+    destroys the generated project."""
+    url, sha = read_tools_pin (source)
+    report = []
+
+    branch = 'main'
+    if not (dest / '.git').is_dir ():
+        git (dest, 'init', '-b', branch)
+        report.append ('git init -b main')
+    else:
+        # cloning a template keeps the branch it was cloned with, do not fight it
+        branch = current_branch (dest)
+        report.append ('.git already present: kept as is'
+                       + ('' if branch == 'main' else f' (pushing to {branch})'))
+        if branch != 'main':
+            report.append ('::warning::the workflow uploads the .apx only on main (it only checks the build on a pull '
+                           f'request): merge {branch} into main, or rename it, to get the artifacts')
+
+    if not (dest / 'Tools' / 'BuildAddOn.py').is_file ():
+        if (dest / 'Tools').exists ():
+            shutil.rmtree (dest / 'Tools')
+        out = git (dest, 'submodule', 'add', url, 'Tools', optional = True)
+        if out.returncode:
+            report.append ('::error::git submodule add failed: '
+                           + (out.stderr or out.stdout).strip ()[:200]
+                           + f' - run it by hand: git submodule add {url} Tools')
+        else:
+            if sha:
+                git (dest, '-C', 'Tools', 'checkout', sha, optional = True)
+                report.append (f'Tools submodule registered and checked out at {sha[:12]}')
+            git (dest, 'add', 'Tools', '.gitmodules', optional = True)
+    else:
+        report.append ('Tools/ already populated: left untouched')
+
+    git (dest, 'add', '-A')
+    commit = git (dest, 'commit', '-m', f'Start {args.name} from the Archicad add-on template',
+                  optional = True)
+    committed = commit.returncode == 0
+    if committed:
+        head = git (dest, 'rev-parse', '--short', 'HEAD').stdout.strip ()
+        report.append (f'first commit {head}')
+    else:
+        detail = (commit.stderr or commit.stdout).strip ().splitlines ()
+        report.append ('the first commit did NOT happen ('
+                       + (detail[-1][:120] if detail else 'unknown reason')
+                       + ') - usually the git identity: git config user.name/user.email, then git commit -m "..."')
+        report.append ('* nothing was pushed: the repository stays local until the commit exists')
+    if not committed and not git (dest, 'rev-parse', 'HEAD', optional = True).returncode:
+        committed = True          # an existing repository with history can still be pushed
+
+    if git (dest, 'rev-parse', '--is-shallow-repository', optional = True).stdout.strip () == 'true':
+        report.append ('::warning::this clone is shallow, GitHub rejects a push from it '
+                       '(shallow update not allowed): run git fetch --unshallow first, then push. '
+                       'The generated files are fine, only the push is at risk')
+
+    if args.create_repo and args.remote_url:
+        report.append ('::warning::--create-repo and --remote-url given: using --remote-url only')
+    if args.remote_url and not committed:
+        report.append (f'skipped the push (no commit yet) - commit, then: git push -u origin {branch}')
+    elif args.remote_url:
+        git (dest, 'remote', 'add', 'origin', args.remote_url, optional = True)
+        push = git (dest, 'push', '-u', 'origin', branch, optional = True)
+        report.append ('pushed to ' + args.remote_url if push.returncode == 0 else
+                       'git push failed: ' + (push.stderr or push.stdout).strip ()[:200])
+    elif args.create_repo and not committed:
+        report.append ('skipped the GitHub repository creation (no commit yet)')
+    elif args.create_repo:
+        if not shutil.which ('gh'):
+            report.append ('::error::the gh cli is not installed - create the repository yourself, then '
+                           f'git remote add origin <url> && git push -u origin {branch}')
+        else:
+            repo_name = args.repo_name or args.name
+            if args.visibility == 'public':
+                print ('::warning::creating a PUBLIC repository: the sources become readable by anyone. '
+                       'The MDID numbers are not secrets, your code is.')
+            create = run (['gh', 'repo', 'create', repo_name, '--source', str (dest), '--remote', 'origin',
+                           '--' + args.visibility, '--push',
+                           '--description', f'Archicad add-on {args.name}'], cwd = str (dest))
+            if create.returncode == 0:
+                last = [line for line in create.stdout.strip ().splitlines () if line.strip ()]
+                report.append (f'GitHub repository created and pushed ({args.visibility}): '
+                               + (last[-1] if last else repo_name))
+            else:
+                report.append ('::error::gh repo create failed: '
+                               + (create.stderr or create.stdout).strip ()[:300])
+                report.append (f'you can still run: gh repo create {repo_name} --source "{dest}" '
+                               f'--{args.visibility} --remote origin --push')
+    else:
+        report.append ('no remote configured: add --create-repo (gh) or --remote-url <git url> to push, '
+                       'or do it by hand')
+
+    for line in report:
+        print (f'* {line}')
+    return report
+
+
+def watch_ci (dest: pathlib.Path, branch = 'main'):
+    """Follow the first Actions run of the new project (needs the gh cli)."""
+    if not shutil.which ('gh'):
+        print ('* the gh cli is not installed: open the Actions tab of the repository to follow the build')
+        return
+    import time
+    run_id = ''
+    for attempt in range (6):
+        out = run (['gh', 'run', 'list', '--branch', branch, '--limit', '1',
+                    '--json', 'databaseId,status,conclusion,url', '--jq', '.[0].databaseId'],
+                   cwd = str (dest))
+        if out.returncode == 0 and out.stdout.strip () and out.stdout.strip () != 'null':
+            run_id = out.stdout.strip ()
+            break
+        if attempt == 0:
+            print ('* the workflow is not registered yet, retrying for a minute '
+                   '(GitHub needs the push to land on a repository it knows)')
+        time.sleep (10)
+    if not run_id:
+        print ('* no Actions run detected: if the repository is not on GitHub yet, this is expected. '
+              'After the first push: gh run list --limit 3, then gh run watch <id> --exit-status')
+        return
+    print (f'* following run {run_id} (Ctrl-C only detaches, the build keeps running on GitHub)')
+    watch = subprocess.run (['gh', 'run', 'watch', run_id, '--exit-status'], cwd = str (dest))
+    if watch.returncode:
+        print (f'* the run failed: gh run view {run_id} --log-failed   '
+              f'(and the job summary holds the first real error + the .apx verification report)')
+
+
 def self_check (dest: pathlib.Path):
     problems = []
     notes = []
@@ -322,6 +502,8 @@ def self_check (dest: pathlib.Path):
     for path in sorted (dest.rglob ('*')):
         if not path.is_file () or path.suffix.lower () not in CHECK_SUFFIXES:
             continue
+        if is_skipped (path, dest):
+            continue
         if 'new_addon' in path.name:
             continue
         for index, line in enumerate (path.read_text (encoding = 'utf-8', errors = 'replace').split ('\n'), 1):
@@ -330,15 +512,89 @@ def self_check (dest: pathlib.Path):
     return problems, notes, leftovers[:15]
 
 
-def parse_args ():
+def load_data_file (path):
+    """Read the add-on data from a small json/ini file so that starting a project
+    is one line: python Scripts/new_addon.py --from addon.json --dest ../WallKit
+
+        {
+          "name": "WallKit",
+          "description": "Outils de murs - custom wall tools",
+          "developerId": 944130148,
+          "localId": 2158966928,
+          "version": "1.0.0",
+          "languages": ["INT", "FRA"],
+          "acVersions": [29, 30],
+          "copyrightName": "nuancearchitect",
+          "repository": {"visibility": "private", "create": true, "watchCi": true}
+        }
+    """
+    file = pathlib.Path (path)
+    if not file.is_file ():
+        raise SystemExit (f'::error::{file} does not exist')
+    text = file.read_text (encoding = 'utf-8-sig')
+    try:
+        data = json.loads (text)
+    except json.JSONDecodeError as error:
+        raise SystemExit (f'::error::{file} is not valid json: {error}')
+    if not isinstance (data, dict):
+        raise SystemExit (f'::error::{file} must hold a single json object')
+    return data
+
+
+KEY_TO_FLAG = {
+    'name': '--name',
+    'description': '--description',
+    'developerId': '--developer-id',
+    'localId': '--local-id',
+    'version': '--version',
+    'copyrightName': '--copyright-name',
+}
+
+
+def data_to_argv (data, given_dests):
+    """Turn the data file into command line defaults (flags already given win)."""
+    argv = []
+
+    def add (flag, value):
+        if flag.lstrip ('-').replace ('-', '_') not in given_dests:
+            argv.extend ([flag, str (value)])
+
+    for key, flag in KEY_TO_FLAG.items ():
+        if key in data:
+            add (flag, data[key])
+    if 'languages' in data:
+        add ('--languages', ','.join (data['languages']))
+    if 'acVersions' in data:
+        add ('--ac-versions', ','.join (str (v) for v in data['acVersions']))
+    repo = data.get ('repository', {}) or {}
+    if 'visibility' in repo:
+        add ('--visibility', repo['visibility'])
+    if 'name' in repo:
+        add ('--repo-name', repo['name'])
+    if 'remoteUrl' in repo:
+        add ('--remote-url', repo['remoteUrl'])
+    if repo.get ('create'):
+        argv.append ('--create-repo')
+    if repo.get ('initGit', True):
+        argv.append ('--init-git')
+    if repo.get ('watchCi'):
+        argv.append ('--watch-ci')
+    return argv
+
+
+def build_parser ():
     parser = argparse.ArgumentParser (description = 'Create a new Archicad add-on project from this template',
                                       formatter_class = argparse.RawDescriptionHelpFormatter,
                                       epilog = __doc__)
-    parser.add_argument ('--name', required = True, help = 'add-on name and class prefix, e.g. WallKit')
-    parser.add_argument ('--description', required = True, help = 'description shown in the add-on manager')
-    parser.add_argument ('--developer-id', required = True, type = int, help = "Graphisoft developer id ('MDID')")
-    parser.add_argument ('--local-id', required = True, type = int, help = "Graphisoft local id ('MDID')")
-    parser.add_argument ('--dest', required = True, help = 'target folder')
+    parser.add_argument ('--name', help = 'add-on name and class prefix, e.g. WallKit')
+    parser.add_argument ('--description', help = 'description shown in the add-on manager')
+    parser.add_argument ('--developer-id', type = int, help = "Graphisoft developer id ('MDID')")
+    parser.add_argument ('--local-id', type = int, help = "Graphisoft local id ('MDID')")
+    parser.add_argument ('--dest', help = 'target folder')
+    parser.add_argument ('--in-place', dest = 'in_place', action = 'store_true',
+                         help = 'transform the CURRENT repository instead of copying elsewhere: use this '
+                                'right after cloning the template (git clone --recurse-submodules ...). '
+                                'It rewrites the tracked files; undo everything with git checkout -- .')
     parser.add_argument ('--version', default = '1.0.0', help = 'add-on version (config.json)')
     parser.add_argument ('--languages', default = 'INT,FRA',
                          help = 'comma separated language codes, the first one is the default of the build '
@@ -348,11 +604,61 @@ def parse_args ():
     parser.add_argument ('--template-dir', default = str (pathlib.Path (__file__).resolve ().parent.parent),
                          help = 'folder of this template (default: parent of Scripts/)')
     parser.add_argument ('--force', action = 'store_true', help = 'write into an existing non-empty folder')
-    return parser.parse_args ()
+    parser.add_argument ('--from', dest = 'data_file', metavar = 'FILE.json',
+                         help = 'read the add-on data from a json file (see load_data_file); '
+                                'explicit command line flags win over the file')
+    parser.add_argument ('--init-git', action = 'store_true',
+                         help = 'git init the new project, add the Tools submodule at the pinned commit '
+                                'and make the first commit')
+    parser.add_argument ('--create-repo', action = 'store_true',
+                         help = 'with --init-git: create the GitHub repository with gh and push '
+                                '(requires the gh cli authenticated as you)')
+    parser.add_argument ('--repo-name', default = None, help = 'GitHub repository name (default: --name)')
+    parser.add_argument ('--visibility', default = 'private', choices = ('private', 'public'),
+                         help = 'visibility of the created GitHub repository')
+    parser.add_argument ('--remote-url', default = None, help = 'existing repository url to push to')
+    parser.add_argument ('--watch-ci', action = 'store_true', help = 'follow the first Actions run')
+    return parser
+
+
+def parse_args (argv = None, only_given = False):
+    """Parse the command line.
+
+    only_given=True drops the untouched defaults, so the caller can tell what the
+    user really typed from what the parser filled in (precedence: command line >
+    --from file > built-in defaults).
+    """
+    parser = build_parser ()
+    if only_given:
+        for action in parser._actions:
+            action.default = argparse.SUPPRESS
+    return parser.parse_args (argv)
 
 
 def main ():
-    args = parse_args ()
+    cli = parse_args (only_given = True)          # what was really typed
+    args = vars (parse_args ())                   # with the built-in defaults
+    args.update (vars (cli))
+    if getattr (cli, 'data_file', None):
+        data = load_data_file (cli.data_file)
+        from_file = parse_args (data_to_argv (data, set (vars (cli))), only_given = True)
+        for key, value in vars (from_file).items ():
+            if key not in vars (cli):
+                args[key] = value
+        if 'dest' not in vars (cli) and data.get ('dest') and not args.get ('dest'):
+            args['dest'] = str ((pathlib.Path (cli.data_file).resolve ().parent / data['dest']).resolve ())
+    args = argparse.Namespace (**args)
+
+    required = [('--name', args.name), ('--description', args.description),
+                ('--developer-id', args.developer_id), ('--local-id', args.local_id)]
+    required += [] if args.in_place else [('--dest (or --in-place)', args.dest)]
+    required = tuple (required)
+    missing = [flag for flag, value in required if value in (None, '')]
+    if missing:
+        sys.exit ('::error::missing required value(s): ' + ', '.join (missing)
+                  + '\n         give them on the command line, or in the --from file with the keys '
+                    '"name", "description", "developerId", "localId", "dest"\n'
+                    '         (a relative "dest" is resolved from the folder of that file)')
     if not re.fullmatch (r'[A-Z][A-Za-z0-9_]{1,62}', args.name):
         sys.exit (f'::error::--name {args.name!r} must start with a capital letter and be one identifier')
     args.languages = [lang.strip ().upper () for lang in args.languages.split (',') if lang.strip ()]
@@ -373,16 +679,33 @@ def main ():
     source = pathlib.Path (args.template_dir).resolve ()
     if not (source / 'config.json').is_file () or not (source / 'RFIX' / 'AddOnFix.grc').is_file ():
         sys.exit (f'::error::{source} is not this template (no config.json / RFIX/AddOnFix.grc)')
-    dest = pathlib.Path (args.dest).resolve ()
-    if dest == source:
-        sys.exit ('::error::--dest must not be the template itself')
-    if dest.exists () and any (dest.iterdir ()) and not args.force:
-        sys.exit (f'::error::{dest} exists and is not empty (use --force to write into it)')
-    dest.mkdir (parents = True, exist_ok = True)
+    if args.in_place:
+        dest = source
+        if not (dest / '.git').exists ():
+            sys.exit ('::error::--in-place needs a git repository to rewrite (clone the template with '
+                      'git clone --recurse-submodules, or use --dest)')
+        status = run (['git', '-C', str (dest), 'status', '--porcelain'])
+        if status.returncode == 0 and status.stdout.strip ():
+            sys.exit ('::error::the working tree is not clean; commit or stash first, because --in-place '
+                      'renames files (git status shows what would be mixed up)')
+        print (f'* transforming this repository in place: {dest}')
+    else:
+        if not args.dest:
+            sys.exit ('::error::--dest is required (or use --in-place inside a fresh clone of the template)')
+        dest = pathlib.Path (args.dest).resolve ()
+        if dest == source:
+            sys.exit ('::error::--dest must not be the template itself (use --in-place to transform a clone)')
+        if dest.exists () and any (p for p in dest.iterdir () if p.name != '.git') and not args.force:
+            sys.exit (f'::error::{dest} exists and is not empty (use --force to write into it)')
+        dest.mkdir (parents = True, exist_ok = True)
 
-    names = list_project_files (source)
-    copied = copy_tree (source, dest, names)
-    print (f'* {copied} template files copied to {dest}')
+    if args.in_place:
+        names = list_project_files (source)
+        print (f'* {len (names)} tracked files, renamed in place')
+    else:
+        names = list_project_files (source)
+        copied = copy_tree (source, dest, names)
+        print (f'* {copied} template files copied to {dest}')
 
     touched, renamed = rename_identifiers (dest, args.name)
     print (f'* identity renamed in {touched} files; files renamed: {", ".join (renamed) or "none"}')
@@ -460,6 +783,14 @@ def main ():
     gitmodules = dest / '.gitmodules'
     if gitmodules.is_file ():
         url = (re.search (r'url\s*=\s*(\S+)', gitmodules.read_text (encoding = 'utf-8')) or [None, ''])[1]
+
+    if args.init_git or args.create_repo or args.remote_url or args.watch_ci:
+        print ('\n=== repository ===')
+        prepare_repository (dest, source, args)
+        if args.watch_ci:
+            print ('\n=== first Actions run ===')
+            watch_ci (dest, current_branch (dest))
+        return 0
 
     print ('\n=== next steps ===')
     print (f'  cd "{dest}"')

@@ -336,10 +336,49 @@ Archicad. Tests manuels recommandés, par version (29 et 30) :
 
 Le modèle est **volontairement sans nom de produit câblé** : tout part de
 `config.json` (nom, description, langues, version) et des fichiers `.grc`.
-Ni le workflow ni le script de vérification ne citent `TEST`. Deux façons de
-partir de là.
+Ni le workflow ni le script de vérification ne citent `TEST`. Trois façons de
+partir de là, de la plus automatique à la plus manuelle.
 
-### a) Le plus simple : le script de génération
+### a0) Le départ automatique : un fichier de données, une commande
+
+On ne remplit que les **données de l'add-on**, le reste est enchaîné par le
+script (génération, dépôt git, sous-module épinglé, poussée, premier build).
+
+```json
+{
+  "name": "BimTools",
+  "description": "Outils BIM (FR/EN/DE)",
+  "developerId": 944130148,
+  "localId": 2158966929,
+  "version": "1.0.0",
+  "languages": ["INT", "FRA", "DEU"],
+  "acVersions": [29, 30],
+  "dest": "BimTools",
+  "repository": { "initGit": true, "create": true,
+                  "visibility": "private", "watchCi": true }
+}
+```
+
+```bash
+git clone --recurse-submodules https://github.com/nuancearchitect-commits/ADDON-TEST.git
+cd ADDON-TEST && python Scripts/new_addon.py --from ../bim.json
+```
+
+`repository.remoteUrl` au lieu de `create: true` pousse vers un dépôt déjà créé
+(`git remote add origin` + `git push`). Les deux seuls gestes qui restent hors
+portée du script, parce que l'API GitHub ne les expose pas : cocher **Template
+repository** dans *Settings*, et merger sur `main` (la CI ne publie les `.apx`
+que sur cette branche).
+
+`--in-place` fait la même chose **dans le clone lui-même**, sans `dest` : le
+clone du modèle devient le projet. Il refuse si l'arbre de travail est sale, et
+`git checkout -- .` annule tout.
+
+`--init-git` / `--create-repo` / `--remote-url` / `--watch-ci` / `--repo-name` /
+`--visibility` existent aussi en ligne de commande ; **la ligne de commande gagne
+sur le fichier**, qui gagne sur les défauts.
+
+### a) Génération simple, sans toucher au dépôt
 
 ```bash
 python Scripts/new_addon.py \
@@ -350,8 +389,9 @@ python Scripts/new_addon.py \
   --languages INT,FRA --ac-versions 29,30
 ```
 
-Il copie les 23 fichiers suivis par git (jamais `Build/`, jamais le contenu de
-`Tools/`), puis :
+Il copie les 24 fichiers suivis par git (jamais `Build/`, jamais le contenu de
+`Tools/`, jamais `.gitmodules` : le projet généré enregistre lui-même le
+sous-module), puis :
 
 * renomme l'identité partout : classes/fichiers `Test*` → `WallKit*`, macros
   `ID_TEST_*` → `ID_WALLKIT_*`, titre/description `'STR#'`, garde d'en-tête du
@@ -372,9 +412,19 @@ Il copie les 23 fichiers suivis par git (jamais `Build/`, jamais le contenu de
   `#define` de `Src/ResourceIds.hpp`, chaque `#include` local existe, et aucun
   token `TEST`/`Test` ne traîne. Sortie non nulle si une de ces règles casse.
 
-Il affiche ensuite les commandes `git init` / `git submodule add … Tools` /
-`git -C Tools checkout <sha épinglé>` à coller. Le projet généré n'a **aucun**
-secret et se construit exactement comme ici.
+Sans option de dépôt, il affiche les commandes `git init` / `git submodule add …
+Tools` / `git -C Tools checkout <sha épinglé>` à coller. Avec `--init-git` (ou
+`--create-repo`, ou `--remote-url`), il les exécute : `git init -b main`,
+`git submodule add <url> Tools` **check-outé au commit épinglé par le modèle**
+(lu via `git ls-files -s Tools`, donc pas la dernière version du dépôt de
+Graphisoft), `git add -A`, premier commit, puis `git push` vers `remoteUrl` ou
+`gh repo create <name> --source . --remote origin --private --push`. Échouer ne
+casse rien : un `gh` absent ou non authentifié, une identité git manquante,
+impriment un message et laissent le projet généré intact (le push est sauté
+tant que le commit n'existe pas, jamais un push sur une ref inexistante).
+`--watch-ci` attend le premier run et le suit (`gh run watch --exit-status`),
+`--visibility public` avertit avant de publier les sources. Le projet généré n'a
+**aucun** secret et se construit exactement comme ici.
 
 Le dossier `Scripts/` étant copié lui aussi, chaque nouveau projet peut à son
 tour servir de modèle (`python Scripts/new_addon.py …` y fonctionne pareil) :
@@ -383,13 +433,15 @@ rien n'oblige à repasser par ce dépôt une fois le premier add-on livré.
 ### b) À la main (cloner puis retoucher 5 endroits)
 
 ```bash
-git clone -b main https://github.com/nuancearchitect-commits/ADDON-TEST.git MonAddOn
-cd MonAddOn && git remote rename origin template && git remote remove origin   # repartir de zéro côté remote
+git clone --recurse-submodules https://github.com/nuancearchitect-commits/ADDON-TEST.git MonAddOn
+cd MonAddOn && git remote remove origin     # repartir de zéro côté remote
 ```
 
 `config.json`, le bloc `'MDID'` de `RFIX/AddOnFix.grc`, les chaînes de
 `RINT/AddOn.grc`, le GUID de `Src/TestPalette.cpp`, la matrice du workflow. Le
-reste (outillage, cache, vérification, artefacts) suit automatiquement.
+reste (outillage, cache, vérification, artefacts) suit automatiquement. C'est
+exactement ce que fait `--in-place`, si l'on préfère comprendre avant de laisser
+le script écrire.
 
 ### Ce qui est réutilisé tel quel, et pourquoi ça tient
 
