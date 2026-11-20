@@ -336,52 +336,71 @@ Archicad. Tests manuels recommandés, par version (29 et 30) :
 
 Le modèle est **volontairement sans nom de produit câblé** : tout part de
 `config.json` (nom, description, langues, version) et des fichiers `.grc`.
-Ni le workflow ni le script de vérification ne citent `TEST`. Trois façons de
-partir de là, de la plus automatique à la plus manuelle.
+Ni le workflow ni le script de vérification ne citent `TEST`. Une seule façon de
+partir de là, décrite étape par étape ; les deux sections suivantes ne sont que
+des variantes de confort.
 
-### a0) Le départ automatique : un fichier de données, une commande
+### Les étapes, dans l'ordre (c'est la voie normale)
 
-On ne remplit que les **données de l'add-on**, le reste est enchaîné par le
-script (génération, dépôt git, sous-module épinglé, poussée, premier build).
+**1 — Cloner le dépôt et le renommer du nom de l'add-on.**
+
+```bash
+git clone --recurse-submodules https://github.com/nuancearchitect-commits/ADDON-TEST.git WallKit
+cd WallKit
+```
+
+**2 — Remplir `addon.json`, à la racine du dépôt.** Le fichier est déjà là, vide
+de son contenu utile (`FILL-ME`). C'est la seule chose à écrire.
 
 ```json
 {
-  "name": "BimTools",
-  "description": "Outils BIM (FR/EN/DE)",
+  "name": "WallKit",
+  "description": "Outils de murs - custom wall tools",
   "developerId": 944130148,
-  "localId": 2158966929,
+  "localId": 2158966928,
   "version": "1.0.0",
-  "languages": ["INT", "FRA", "DEU"],
+  "languages": ["INT", "FRA"],
   "acVersions": [29, 30],
-  "dest": "BimTools",
-  "repository": { "initGit": true, "create": true,
-                  "visibility": "private", "watchCi": true }
+  "copyrightName": "nuancearchitect",
+  "repository": { "initGit": true }
 }
 ```
 
+**3 — Lancer le script, sans argument.**
+
 ```bash
-git clone --recurse-submodules https://github.com/nuancearchitect-commits/ADDON-TEST.git
-cd ADDON-TEST && python Scripts/new_addon.py --from ../bim.json
+python Scripts/new_addon.py
 ```
 
-`repository.remoteUrl` au lieu de `create: true` pousse vers un dépôt déjà créé
-(`git remote add origin` + `git push`). Le script réécrit aussi les déclencheurs du workflow dans le projet généré : le
-modèle se construit sur `main` et sur `arena/**`, un nouveau projet doit se
-construire sur **sa** branche de départ (et sur ses pull requests) — c'est ce
-qu'on obtient, `push` + `pull_request` sur la branche où l'on se trouve, donc le
-premier `git push` lance déjà un vrai build avec artefacts.
+Il lit `addon.json`, voit qu'il n'y a pas de `--dest`, et transforme **ce clone**
+en projet : renommage de l'identité, `config.json`, bloc `'MDID'`, GUID de
+palette, dossiers de langue, matrice AC et déclencheurs du workflow, README du
+projet, auto-vérification, puis commit sur la branche courante. `addon.json` est
+réécrit avec les valeurs appliquées : le fichier reste la carte d'identité du
+projet.
 
-Il reste deux gestes hors de portée du script, parce que l'API GitHub ne les
-expose pas : cocher **Template repository** dans *Settings*, et merger sur `main`
-si l'on veut que le modèle lui-même serve de départ aux clones futurs.
+**4 — Pousser sur GitHub, et ouvrir Arena sur ce dossier.**
 
-`--in-place` fait la même chose **dans le clone lui-même**, sans `dest` : le
-clone du modèle devient le projet. Il refuse si l'arbre de travail est sale, et
-`git checkout -- .` annule tout.
+```bash
+gh repo create WallKit --source . --private --remote origin --push
+```
 
-`--init-git` / `--create-repo` / `--remote-url` / `--watch-ci` / `--repo-name` /
-`--visibility` existent aussi en ligne de commande ; **la ligne de commande gagne
-sur le fichier**, qui gagne sur les défauts.
+Le premier build part tout seul (le workflow a été recalé sur la branche où l'on
+se trouve, plus les pull requests) et dépose `WallKit-AC29.apx` et
+`WallKit-AC30.apx` en artefacts. Pour suivre le run depuis le terminal : ajouter
+`"watchCi": true` dans le bloc `repository` avant l'étape 3, ou `gh run watch`.
+
+**5 — Développer.** Les ressources se touchent dans `RINT/AddOn.grc`,
+`RFRA/AddOn.grc` et `RFIX/*.grc`, les ids se déclarent dans
+`Src/ResourceIds.hpp`, le code dans `Src/WallKit*.cpp`. Un commit préfixé
+`[wip]` produit un `.apx` marqué « non distribuable » ; `python
+Tools/BuildAddOn.py --configFile config.json -v 30 -b Release -r` refait le même
+build que la CI en local.
+
+Ce que les étapes 1→3 remplacent, et ce qui reste manuel : cocher **Template
+repository** dans *Settings* du dépôt modèle (l'API GitHub ne l'expose pas), et
+merger `arena/23416127-addon-test` sur `main` pour que les clones futurs
+partent bien de ce travail.
 
 ### a) Génération simple, sans toucher au dépôt
 

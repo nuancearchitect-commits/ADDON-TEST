@@ -61,6 +61,11 @@ CHECK_SUFFIXES = {'.cpp', '.hpp', '.h', '.grc', '.rc2', '.json', '.yml', '.yaml'
 EXCLUDED_DIRS = {'Build', 'dist', 'out', '__pycache__', '.vs', '.vscode', 'node_modules'}
 TEMPLATE_TOKENS = ('TEST', 'Test')
 
+# The add-on data lives in the repository itself, as a form to fill before the
+# first run: clone, edit addon.json, run the script. Nothing else to remember.
+DATA_FILE_NAME = 'addon.json'
+PLACEHOLDER = 'FILL-ME'
+
 
 def run (args, cwd = None, capture = True):
     """Run a command and return the CompletedProcess: every caller decides what is fatal."""
@@ -298,6 +303,33 @@ Check that your developer id / local id pair matches your registration on
 https://archicadapi.graphisoft.com/profile/add-ons, otherwise Archicad will refuse
 or flag the add-on.
 """
+
+
+def write_data_file (dest: pathlib.Path, args):
+    """Keep addon.json in step with the project: it is both the form to fill and
+    the record of what the add-on is, so re-running the script gives the same tree."""
+    data = {
+        'name': args.name,
+        'description': args.description,
+        'developerId': args.developer_id,
+        'localId': args.local_id,
+        'version': args.version,
+        'languages': args.languages,
+        'acVersions': args.ac_versions,
+        'copyrightName': args.copyright_name,
+    }
+    file = dest / DATA_FILE_NAME
+    # keep whatever else the file held (the repository block, private notes): only
+    # the identity keys are refreshed, so the file stays the single place to look at
+    if file.is_file ():
+        try:
+            previous = json.loads (file.read_text (encoding = 'utf-8-sig'))
+            if isinstance (previous, dict):
+                data = {**{k: v for k, v in previous.items () if k not in data}, **data}
+        except json.JSONDecodeError:
+            pass
+    file.write_text (json.dumps (data, indent = 2) + '\n', encoding = 'utf-8')
+    return True
 
 
 def write_project_readme (dest: pathlib.Path, args):
@@ -639,7 +671,8 @@ def build_parser ():
                          help = 'folder of this template (default: parent of Scripts/)')
     parser.add_argument ('--force', action = 'store_true', help = 'write into an existing non-empty folder')
     parser.add_argument ('--from', dest = 'data_file', metavar = 'FILE.json',
-                         help = 'read the add-on data from a json file (see load_data_file); '
+                         default = None,
+                         help = f'add-on data file (default: {DATA_FILE_NAME} at the root of this repository); '
                                 'explicit command line flags win over the file')
     parser.add_argument ('--init-git', action = 'store_true',
                          help = 'git init the new project, add the Tools submodule at the pinned commit '
@@ -671,8 +704,17 @@ def parse_args (argv = None, only_given = False):
 
 def main ():
     cli = parse_args (only_given = True)          # what was really typed
+    auto_data_file = False
     args = vars (parse_args ())                   # with the built-in defaults
     args.update (vars (cli))
+    if not getattr (cli, 'data_file', None):
+        # the data file of the repository is the default: clone, fill addon.json, run
+        auto = pathlib.Path (getattr (cli, 'template_dir', None)
+                              or pathlib.Path (__file__).resolve ().parent.parent) / DATA_FILE_NAME
+        if auto.is_file ():
+            auto_data_file = True
+            cli.data_file = str (auto)
+            print (f'* reading the add-on data from {auto}')
     if getattr (cli, 'data_file', None):
         data = load_data_file (cli.data_file)
         from_file = parse_args (data_to_argv (data, set (vars (cli))), only_given = True)
@@ -683,6 +725,17 @@ def main ():
             args['dest'] = str ((pathlib.Path (cli.data_file).resolve ().parent / data['dest']).resolve ())
     args = argparse.Namespace (**args)
 
+    source = pathlib.Path (args.template_dir).resolve ()
+    if not (source / 'config.json').is_file () or not (source / 'RFIX' / 'AddOnFix.grc').is_file ():
+        sys.exit (f'::error::{source} is not this template (no config.json / RFIX/AddOnFix.grc)')
+    # the usual case: a clone of this repository with its own addon.json filled in,
+    # and nothing else on the command line - the clone becomes the project
+    if (not args.in_place and not args.dest and auto_data_file
+            and args.name and (source / '.git').exists ()):
+        args.in_place = True
+        print (f'* no --dest: transforming this clone in place, because {DATA_FILE_NAME} says who it is '
+              f'(pass --dest to copy elsewhere instead)')
+
     required = [('--name', args.name), ('--description', args.description),
                 ('--developer-id', args.developer_id), ('--local-id', args.local_id)]
     required += [] if args.in_place else [('--dest (or --in-place)', args.dest)]
@@ -690,9 +743,18 @@ def main ():
     missing = [flag for flag, value in required if value in (None, '')]
     if missing:
         sys.exit ('::error::missing required value(s): ' + ', '.join (missing)
-                  + '\n         give them on the command line, or in the --from file with the keys '
-                    '"name", "description", "developerId", "localId", "dest"\n'
-                    '         (a relative "dest" is resolved from the folder of that file)')
+                  + f'\n         fill them in {DATA_FILE_NAME} at the root of the repository '
+                    '(name, description, developerId, localId, version, languages, acVersions),\n'
+                    '         or give them on the command line - the command line wins over the file')
+    if PLACEHOLDER in (args.name, args.description) or args.developer_id in (None, 0) or args.local_id in (None, 0):
+        unfilled = [key for key, value in (('name', args.name), ('description', args.description),
+                                           ('developerId', args.developer_id), ('localId', args.local_id))
+                    if value in (None, '', PLACEHOLDER, 0)]
+        hint = (pathlib.Path (cli.data_file).resolve () if getattr (cli, 'data_file', None)
+                else pathlib.Path (args.template_dir) / DATA_FILE_NAME)
+        sys.exit (f'::error::{" and ".join (unfilled)} still says "{PLACEHOLDER}" - fill in {hint}, then run '
+                  f'the script again. The two ids come from the Graphisoft developer portal and '
+                  f'must not be copied from another add-on.')
     if not re.fullmatch (r'[A-Z][A-Za-z0-9_]{1,62}', args.name):
         sys.exit (f'::error::--name {args.name!r} must start with a capital letter and be one identifier')
     args.languages = [lang.strip ().upper () for lang in args.languages.split (',') if lang.strip ()]
@@ -710,18 +772,27 @@ def main ():
     if not args.copyright_name:
         args.copyright_name = args.name
 
-    source = pathlib.Path (args.template_dir).resolve ()
-    if not (source / 'config.json').is_file () or not (source / 'RFIX' / 'AddOnFix.grc').is_file ():
-        sys.exit (f'::error::{source} is not this template (no config.json / RFIX/AddOnFix.grc)')
     if args.in_place:
         dest = source
         if not (dest / '.git').exists ():
             sys.exit ('::error::--in-place needs a git repository to rewrite (clone the template with '
                       'git clone --recurse-submodules, or use --dest)')
-        status = run (['git', '-C', str (dest), 'status', '--porcelain'])
-        if status.returncode == 0 and status.stdout.strip ():
-            sys.exit ('::error::the working tree is not clean; commit or stash first, because --in-place '
-                      'renames files (git status shows what would be mixed up)')
+        # only TRACKED edits matter: --in-place renames tracked files, and the
+        # first commit sweeps untracked ones up anyway (git status -uno keeps notes,
+        # Build/ and other untracked folders out of the way)
+        status = run (['git', '-C', str (dest), 'status', '--porcelain', '--untracked-files=no'])
+        changed = [line[3:].strip () for line in status.stdout.splitlines () if line.strip ()]
+        # filling in the data file is the one edit this flow expects before running
+        only_data = bool (changed) and all (path.split (' -> ')[-1].lstrip ('./') == DATA_FILE_NAME
+                                            for path in changed)
+        if status.returncode == 0 and changed and not only_data:
+            sys.exit ('::error::the working tree holds uncommitted edits to tracked files: '
+                      + ', '.join (changed[:8])
+                      + (' ...' if len (changed) > 8 else '')
+                      + '\n         commit or stash them first: --in-place renames tracked files, and a mixed up '
+                        'tree is what git status was meant to show you')
+        if only_data:
+            print (f'* the only local change is {DATA_FILE_NAME}, which is what this script reads: proceeding')
         print (f'* transforming this repository in place: {dest}')
     else:
         if not args.dest:
@@ -746,6 +817,8 @@ def main ():
     config = rewrite_config (dest, args)
     print (f"* config.json: addOnName={config['addOnName']}, languages={config['languages']}, "
           f"default={config['defaultLanguage']}, version={config['version']}")
+    write_data_file (dest, args)
+    print (f'* {DATA_FILE_NAME} kept in step with config.json (it is the form to fill for the next clone)')
     rewrite_mdid (dest, args)
     print (f"* 'MDID': developer id {args.developer_id}, local id {args.local_id}")
     guid = rewrite_palette_guid (dest, args)
@@ -821,7 +894,8 @@ def main ():
     if gitmodules.is_file ():
         url = (re.search (r'url\s*=\s*(\S+)', gitmodules.read_text (encoding = 'utf-8')) or [None, ''])[1]
 
-    if args.init_git or args.create_repo or args.remote_url or args.watch_ci:
+    # --in-place implies the repository steps: a clone is meant to be committed
+    if args.init_git or args.create_repo or args.remote_url or args.watch_ci or args.in_place:
         print ('\n=== repository ===')
         prepare_repository (dest, source, args)
         if args.watch_ci:

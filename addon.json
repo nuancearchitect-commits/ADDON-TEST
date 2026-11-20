@@ -1,0 +1,11 @@
+{
+  "name": "FILL-ME",
+  "description": "FILL-ME",
+  "developerId": 0,
+  "localId": 0,
+  "version": "1.0.0",
+  "languages": ["INT", "FRA"],
+  "acVersions": [29, 30],
+  "copyrightName": "nuancearchitect",
+  "repository": { "initGit": true }
+}
