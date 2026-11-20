@@ -376,7 +376,16 @@ Il affiche ensuite les commandes `git init` / `git submodule add … Tools` /
 `git -C Tools checkout <sha épinglé>` à coller. Le projet généré n'a **aucun**
 secret et se construit exactement comme ici.
 
+Le dossier `Scripts/` étant copié lui aussi, chaque nouveau projet peut à son
+tour servir de modèle (`python Scripts/new_addon.py …` y fonctionne pareil) :
+rien n'oblige à repasser par ce dépôt une fois le premier add-on livré.
+
 ### b) À la main (cloner puis retoucher 5 endroits)
+
+```bash
+git clone -b main https://github.com/nuancearchitect-commits/ADDON-TEST.git MonAddOn
+cd MonAddOn && git remote rename origin template && git remote remove origin   # repartir de zéro côté remote
+```
 
 `config.json`, le bloc `'MDID'` de `RFIX/AddOnFix.grc`, les chaînes de
 `RINT/AddOn.grc`, le GUID de `Src/TestPalette.cpp`, la matrice du workflow. Le
