@@ -401,7 +401,7 @@ def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
         report.append ('.git already present: kept as is'
                        + ('' if branch == 'main' else f' (pushing to {branch})'))
         if branch != 'main':
-            report.append (f'* the workflow was retargeted at {branch} by this script, so the first push does '
+            report.append (f'the workflow was retargeted at {branch} by this script, so the first push does '
                            'run it and upload the .apx (a new repository on main needs no change)')
 
     if not (dest / 'Tools' / 'BuildAddOn.py').is_file ():
@@ -436,11 +436,6 @@ def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
     if not committed and not git (dest, 'rev-parse', 'HEAD', optional = True).returncode:
         committed = True          # an existing repository with history can still be pushed
 
-    if git (dest, 'rev-parse', '--is-shallow-repository', optional = True).stdout.strip () == 'true':
-        report.append ('::warning::this clone is shallow, GitHub rejects a push from it '
-                       '(shallow update not allowed): run git fetch --unshallow first, then push. '
-                       'The generated files are fine, only the push is at risk')
-
     if args.create_repo and args.remote_url:
         report.append ('::warning::--create-repo and --remote-url given: using --remote-url only')
     if args.remote_url and not committed:
@@ -448,8 +443,14 @@ def prepare_repository (dest: pathlib.Path, source: pathlib.Path, args):
     elif args.remote_url:
         git (dest, 'remote', 'add', 'origin', args.remote_url, optional = True)
         push = git (dest, 'push', '-u', 'origin', branch, optional = True)
-        report.append ('pushed to ' + args.remote_url if push.returncode == 0 else
-                       'git push failed: ' + (push.stderr or push.stdout).strip ()[:200])
+        if push.returncode == 0:
+            report.append ('pushed to ' + args.remote_url)
+        else:
+            detail = (push.stderr or push.stdout).strip ()[:200]
+            if 'shallow' in detail:
+                detail += (' - this clone is shallow, GitHub refuses a push from it: '
+                           'git fetch --unshallow, then push again. The generated files are fine')
+            report.append ('::error::git push failed: ' + detail)
     elif args.create_repo and not committed:
         report.append ('skipped the GitHub repository creation (no commit yet)')
     elif args.create_repo:
