@@ -456,6 +456,10 @@ def watch_ci (dest: pathlib.Path, branch = 'main'):
         print ('* the gh cli is not installed: open the Actions tab of the repository to follow the build')
         return
     import time
+    if run (['git', '-C', str (dest), 'remote', 'get-url', 'origin']).returncode != 0:
+        print ('* no origin remote yet: nothing to watch. After the first push: '
+               'gh run list --limit 3, then gh run watch <id> --exit-status')
+        return
     run_id = ''
     for attempt in range (6):
         out = run (['gh', 'run', 'list', '--branch', branch, '--limit', '1',
@@ -479,7 +483,7 @@ def watch_ci (dest: pathlib.Path, branch = 'main'):
               f'(and the job summary holds the first real error + the .apx verification report)')
 
 
-def self_check (dest: pathlib.Path):
+def self_check (dest: pathlib.Path, project_name = ''):
     problems = []
     notes = []
 
@@ -535,7 +539,9 @@ def self_check (dest: pathlib.Path):
         if 'new_addon' in path.name:
             continue
         for index, line in enumerate (path.read_text (encoding = 'utf-8', errors = 'replace').split ('\n'), 1):
-            if any (token in line for token in TEMPLATE_TOKENS):
+            # a project named ...Test is not a leftover of the template: hide its own name first
+            probe = re.sub (re.escape (project_name), '', line, flags = re.I) if project_name else line
+            if any (token in probe for token in TEMPLATE_TOKENS):
                 leftovers.append (f'{path.relative_to (dest)}:{index}: {line.strip ()[:90]}')
     return problems, notes, leftovers[:15]
 
@@ -788,7 +794,7 @@ def main ():
               f'(run the script again with --languages to get it back from {template_folder.name}/)')
 
 
-    problems, notes, leftovers = self_check (dest)
+    problems, notes, leftovers = self_check (dest, args.name)
     print ('\n=== self-check ===')
     if problems:
         for problem in problems:
